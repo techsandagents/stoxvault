@@ -37,7 +37,7 @@ checkable by a stranger, so revisit this if trust ever becomes the constraint.
 
 | | |
 |---|---|
-| Site | https://stockdrop-ten.vercel.app |
+| Site | https://stoxvault.vercel.app |
 | API | https://stockdrop-production.up.railway.app |
 | Vault | `769fv6KK6SAQ5FBAXdUZLdrppdHn5CqqgJBpFCLyf9up` |
 

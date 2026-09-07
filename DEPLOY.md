@@ -1,7 +1,9 @@
 # Deploy runbook (STOXVAULT)
 
 **Deployed 2026-09-07.** Server: https://stockdrop-production.up.railway.app (Railway project `stockdrop`).
-Site: https://stockdrop-ten.vercel.app (Vercel project `stockdrop`, root `web/`).
+Site: https://stoxvault.vercel.app (Vercel project `stoxvault`, root `web/`). The API keeps its
+original hostname (`stockdrop-production`), which is invisible to users; renaming the Railway
+service would change that domain and require editing the meta tag in web/public/index.html.
 Redeploy the server with `cd server && railway up`, the site with `cd web && vercel deploy --prod --yes`.
 The admin key and session secret were generated at deploy time and live only in Railway variables.
 
