@@ -50,6 +50,11 @@ vercel --prod
 
 Then set `CORS_ORIGIN` on Railway to the Vercel URL and redeploy the server.
 
+## Custom domain
+
+`stoxvault.com` and `www.stoxvault.com` are attached to the Vercel project and waiting on DNS.
+The two records to add at GoDaddy are in [DNS.md](DNS.md).
+
 ## 3. Go-live checklist
 
 - [ ] Coin launched. `TOKEN_MINT`, `TOKEN_NAME`, `TOKEN_SYMBOL` set on Railway.
