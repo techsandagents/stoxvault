@@ -348,6 +348,19 @@ export function buildConfig(env = {}, opts = {}) {
 
   const intervalHours = clampInt(int(env, 'ROUND_INTERVAL_HOURS', 6), 1, 24, 6);
   const roundJitterMin = Math.max(0, clampInt(int(env, 'ROUND_JITTER_MIN', 10), 0, 60 * intervalHours, 10));
+  // Anti-cheat: a wallet is paid on the SMALLER of what it held when the cycle's
+  // snapshot window opened and what it holds at the round, so buying just before
+  // a snapshot and selling just after earns nothing. Off (ANTICHEAT=0) means the
+  // round snapshot alone decides, which is the older, gameable rule.
+  const antiCheat = bool(env, 'ANTICHEAT', true);
+  // How long before the mark the opening snapshot is taken. Clamped: under five
+  // minutes the window is not a window, and past the interval it would reach
+  // back into the previous cycle.
+  const openSnapshotWindowRaw = int(env, 'OPEN_SNAPSHOT_WINDOW_MIN', 60);
+  const openSnapshotWindowMin = Math.min(
+    60 * intervalHours,
+    Math.max(5, Number.isInteger(openSnapshotWindowRaw) ? openSnapshotWindowRaw : 60),
+  );
   const minRoundPoolSol = Math.max(0, num(env, 'MIN_ROUND_POOL_SOL', 0.5));
   const feeReserveSol = Math.max(0, num(env, 'FEE_RESERVE_SOL', 0.05));
   const universeSize = clampInt(int(env, 'UNIVERSE_SIZE', 20), 1, 100, 20);
@@ -384,6 +397,8 @@ export function buildConfig(env = {}, opts = {}) {
     universeSize,
     defaultBasketSize,
     defaultBasket,
+    antiCheat,
+    openSnapshotWindowMin,
   });
 
   const cfg = {
@@ -416,6 +431,8 @@ export function buildConfig(env = {}, opts = {}) {
 
     intervalHours,
     roundJitterMin,
+    antiCheat,
+    openSnapshotWindowMin,
     minRoundPoolSol,
     minRoundPoolLamports: solToLamports(minRoundPoolSol).toString(),
     feeReserveSol,
@@ -482,6 +499,8 @@ export function buildConfig(env = {}, opts = {}) {
         excluded,
         intervalHours,
         roundJitterMin,
+        antiCheat,
+        openSnapshotWindowMin,
         minRoundPoolSol,
         feeReserveSol,
         universeSize,
@@ -539,6 +558,17 @@ export function loadConfig(opts = {}) {
     }
     if (!cfg.launched) {
       log.info('TOKEN_MINT is blank: the coin is not launched, rounds will be SKIPPED with reason no_token.');
+    }
+    if (cfg.antiCheat) {
+      // The open snapshot fires at an unpredictable moment inside the FIRST
+      // openSnapshotWindowMin minutes of each cycle, not shortly before the
+      // round, so a wallet has to hold the whole cycle to carry any weight.
+      log.info(
+        `anti-cheat on: two snapshots per round — one in the first ${cfg.openSnapshotWindowMin} minutes of each `
+        + `${cfg.intervalHours}h cycle, one at the round — and a wallet is paid on the smaller of the two balances.`,
+      );
+    } else {
+      log.warn('ANTICHEAT=0: only the round snapshot decides, so buying just before a snapshot and selling after it is profitable.');
     }
     // A malformed DEFAULT_BASKET silently becomes the top-N basket, which sends
     // real money somewhere the operator did not choose. Say so loudly.

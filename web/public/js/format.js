@@ -1,5 +1,5 @@
 /**
- * STOCKDROP — formatting.
+ * STOXVAULT — formatting.
  *
  * One place for every number, address and timestamp on the page, so the columns
  * line up and nothing is rendered two different ways in two different sections.
@@ -265,7 +265,7 @@ export function fmtTokenAmountExact(raw, decimals = 0, symbol = '', uiMultiplier
 
 /* ---------------------------------------------------------------- address -- */
 
-/** `769fv6KK…yf9up` -> `769f…f9up`. The full value belongs in `title`. */
+/** `Xs3oZwbH…TqpH8` -> `Xs3o…pH8`. The full value belongs in `title`. */
 export function truncAddr(address, head = 4, tail = 4) {
   if (typeof address !== 'string') return DASH;
   const a = address.trim();

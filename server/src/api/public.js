@@ -83,6 +83,11 @@ export function createPublicRouter({ cfg, db, services }) {
           slippageBps: cfg.slippageBps,
           liqMinUsd: cfg.liqMinUsd,
           jitterMin: cfg.roundJitterMin,
+          // The anti-cheat rule, so the page can state it in words instead of
+          // hard-coding a number that the operator can change: with it on, a
+          // round pays on the SMALLER of the two balances it saw this cycle.
+          antiCheat: cfg.antiCheat,
+          openSnapshotWindowMin: cfg.openSnapshotWindowMin,
         },
         mode: cfg.mode,
         intervalHours: cfg.intervalHours,

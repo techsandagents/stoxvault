@@ -1,5 +1,5 @@
 /**
- * STOCKDROP — toasts.
+ * STOXVAULT — toasts.
  *
  * `#toast-region` is `role="status" aria-live="polite"`, so a toast announces
  * itself once and then gets out of the way. Rules from web/DOM.md section 13:
@@ -113,9 +113,50 @@ export function clearToasts() {
 }
 
 /**
+ * The last-resort copy path for browsers where `navigator.clipboard` is absent
+ * or refuses (an insecure origin, a denied permission). A detached, off-screen
+ * textarea is selected and `document.execCommand('copy')` is asked to take it;
+ * the node is removed and the previous selection restored either way.
+ *
+ * @param {string} text
+ * @returns {boolean} whether the copy actually happened
+ */
+function legacyCopy(text) {
+  if (typeof document.execCommand !== 'function') return false;
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.setAttribute('aria-hidden', 'true');
+  area.style.position = 'fixed';
+  area.style.top = '-1000px';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+
+  const selection = document.getSelection();
+  const previous = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+
+  let ok = false;
+  try {
+    area.select();
+    area.setSelectionRange(0, text.length);
+    ok = document.execCommand('copy');
+  } catch (err) {
+    ok = false;
+  } finally {
+    area.remove();
+    if (previous && selection) {
+      selection.removeAllRanges();
+      selection.addRange(previous);
+    }
+  }
+  return ok;
+}
+
+/**
  * The copy-to-clipboard helper every copy button on the page shares.
  * `navigator.clipboard` rejects in an insecure context and when the permission
- * is denied, so the failure path is a real toast, not an unhandled rejection.
+ * is denied, so there is a `execCommand` fallback behind it, and if that fails
+ * too the user is told plainly rather than left with an unhandled rejection.
  *
  * @param {string} text the full value — never the truncated one
  * @param {HTMLElement} button the button to flash
@@ -123,24 +164,32 @@ export function clearToasts() {
  */
 export async function copyToClipboard(text, button, label = 'Copied') {
   if (!text) return false;
+
+  let copied = false;
   try {
     if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('no clipboard API');
     await navigator.clipboard.writeText(text);
+    copied = true;
+  } catch (err) {
+    copied = legacyCopy(text);
+  }
+
+  if (copied) {
     if (button) {
       button.classList.add('is-copied');
       setTimeout(() => button.classList.remove('is-copied'), 1200);
     }
     toast({ kind: 'success', title: 'Copied', text: label, key: 'copy' });
     return true;
-  } catch (err) {
-    toast({
-      kind: 'error',
-      title: 'Could not copy',
-      text: 'Your browser blocked clipboard access. Select the text and copy it manually.',
-      key: 'copy',
-    });
-    return false;
   }
+
+  toast({
+    kind: 'error',
+    title: 'Could not copy',
+    text: 'Your browser blocked clipboard access. Select the text and copy it manually.',
+    key: 'copy',
+  });
+  return false;
 }
 
 export default { toast, info, success, warn, error, clearToasts, copyToClipboard };

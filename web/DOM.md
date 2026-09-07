@@ -1,4 +1,4 @@
-# STOCKDROP — web DOM contract
+# STOXVAULT — web DOM contract
 
 Everything the JS layer is allowed to touch in `public/index.html`, and how.
 The shell (HTML + CSS) is finished and owns all visual decisions. `app.js`
@@ -9,7 +9,14 @@ If something is genuinely missing, add it to this file first.
 Files: `public/index.html`, `public/css/{tokens,base,layout,components}.css`,
 `public/assets/{logo,favicon}.svg`. You create `public/js/config.js` and
 `public/js/app.js` (already referenced at the end of `<body>`; `config.js` is a
-classic script and runs first, `app.js` is `type="module"`).
+classic script and runs first, `app.js` is `type="module"`), plus the modules
+`app.js` imports: `api.js`, `wallet.js`, `format.js`, `charts.js`, `rules.js`
+(the drop rules in words, pure) and `ui/*`.
+
+Pure decision functions live outside the DOM code and are covered by
+`web/test/*.test.js` (`node --test web/test/` from the repo root) — that is where
+`snapshotRuleCopy`, `ledgerFootNote`, `coinButtonState`, `readCycle` and
+`snapshotSide` are asserted, with no browser involved.
 
 ---
 
@@ -99,7 +106,9 @@ Containers that own a state, and what "ready" means for each:
 - Light is the default. Dark comes from `prefers-color-scheme` automatically.
 - An explicit choice is `document.documentElement.dataset.theme = 'dark' | 'light'`.
   Both directions win over the system preference.
-- Persist under `localStorage['stockdrop:theme']`; read it and apply it **before
+- Persist under `localStorage['stockdrop:theme']` — an internal identifier that
+  deliberately kept its old name through the rename, so a returning visitor keeps
+  the theme they chose; read it and apply it **before
   first paint** if you can (an inline snippet is not available here, so apply it
   as the first statement of `app.js`). Wrap every `localStorage` access in
   try/catch — private windows throw.
@@ -119,6 +128,8 @@ Containers that own a state, and what "ready" means for each:
 | `#status-pill-text` | span | `LIVE` / `DRY RUN` / `READ ONLY` / `OFFLINE` |
 | `#btn-refresh` | button | click → refetch everything; add `.is-busy` while in flight if you want a hook (no CSS depends on it) |
 | `#theme-toggle` | button | see §2 |
+| `#btn-copy-ca` | button | the coin's contract address. `disabled` while `/api/config.token.mint` is null, and the click handler copies nothing in that state; enabled with no code change once a mint exists. Rewrite `title` and `aria-label` together: `Copy the $TICKER contract address` / `The $TICKER contract address is not available until launch` |
+| `#coin-ticker` | span.mono | `$` + `config.token.symbol`, falling back to `$STOXVAULT` before launch. Never a mint, never a placeholder address |
 | `#wallet-badge` | span.badge | `hidden=false` once connected |
 | `#wallet-address-short` | span | truncated address, `769f…f9up` |
 | `#btn-connect` | button | opens `#wallet-modal` |
@@ -129,7 +140,7 @@ Containers that own a state, and what "ready" means for each:
 The status pill is hidden below 768px by CSS. Do not fight that.
 
 Tab title: update `document.title` when the countdown is known, e.g.
-`STOCKDROP — next round in 02:14` (keep the brand first).
+`STOXVAULT — next round in 02:14` (keep the brand first).
 
 ---
 
@@ -332,10 +343,19 @@ Starts at `data-state="empty"` (the not-connected block, whose
 |---|---|
 | `#proj-balance` | `1,250,000 TOKEN` or `— (token not launched)` |
 | `#proj-eligibility` | `Yes` / `No — need 1,000,000` / `Unknown until launch` |
+| `#proj-cycle-row` | the whole `.kv__row`; `hidden = true` unless `/api/me.cycle` carries a boolean |
+| `#proj-cycle` | did this wallet hold across the whole cycle: `Yes — counted at the smaller of the two snapshots` / `No — not for the cycle running now` |
 | `#proj-share` | `0.42% of the pool` or `—` |
 | `#proj-pool` | `4.21 SOL` |
+| `#proj-cycle-note` | `.callout--info`, `hidden` unless the server sent a note or the wallet did not hold the full cycle. `#proj-cycle-note-title` / `#proj-cycle-note-text`. The server's `cycle.note` is rendered verbatim when it sends one — this is the "you bought this cycle, your first drop is the round after" case, and it stays calm, not alarming |
 | `#proj-note` | why the number is an estimate; say `simulated` when `mode !== 'LIVE'` |
 | `#projection-sim` | badge, `hidden=false` in DRY_RUN |
+
+`/api/me.cycle` is read defensively: the boolean is taken from the first of
+`heldFullCycle` / `heldWholeCycle` / `heldFull` / `fullCycle` / `held` the server
+actually sends, the note from the first of `note` / `message` / `detail` / `text`.
+A `me` document without a `cycle` object leaves both the row and the callout
+hidden — no verdict is invented.
 
 Rules text `#rule-picks-range`, `#rule-pct-range`, `#rule-universe-size`,
 `#rule-eligible-pct` should be rewritten from `/api/config.rules` so the page
@@ -457,11 +477,12 @@ holding-weighted demand while there is no token.
 
 ## 10. Vault
 
-Static, correct, already in the markup — **do not overwrite**:
-`#vault-address` and `#footer-vault-address` =
-`769fv6KK6SAQ5FBAXdUZLdrppdHn5CqqgJBpFCLyf9up`, and `#vault-explorer` points at
-Solscan. Verify against `/api/config.vault.address` and, if they ever differ,
-show an error toast rather than silently replacing the text.
+**The vault address is not rendered anywhere on this site.** There is no address
+element, no copy button for it, no Solscan link and no "send SOL here" callout —
+in the panel, in the hero or in the footer. `/api/config.vault.address` and
+`/api/vault.address` are both read past and never printed. If you are adding
+something that would put that string on the page, that is the thing to stop
+doing. The panel reports what the vault holds and what the next round may spend.
 
 | id | content |
 |---|---|
@@ -475,17 +496,18 @@ show an error toast rather than silently replacing the text.
 | `#vault-holdings-table` | state owner; body `#vault-holdings-body`, rows from `#tpl-holding-row` |
 | `#vault-holdings-count` | `3 tokens` / `none` |
 
-Copy buttons: `#btn-copy-vault`, `#btn-copy-vault-footer`, `#btn-copy-mint`,
-`#btn-copy-stock-mint`. All follow one helper:
+Copy buttons: `#btn-copy-ca` (the nav), `#btn-copy-mint` (the hero) and
+`#btn-copy-stock-mint` (the drawer). All follow one helper:
 
 ```js
-await navigator.clipboard.writeText(text);
-btn.classList.add('is-copied');
-setTimeout(() => btn.classList.remove('is-copied'), 1200);
-toast({ kind: 'success', title: 'Copied', text: 'Vault address copied.' });
+await copyToClipboard(fullValue, btn, 'Contract address copied.');   // ui/toast.js
 ```
-`navigator.clipboard` can reject (insecure context, denied permission) — catch
-it and toast an error instead of throwing.
+`copyToClipboard` tries `navigator.clipboard.writeText`, falls back to an
+off-screen textarea plus `document.execCommand('copy')` when the Clipboard API is
+missing or rejects (insecure context, denied permission), flashes `.is-copied` on
+the button for ~1.2s and toasts. If both paths fail it toasts an error — it never
+throws and never claims a copy that did not happen. Never pass a truncated value,
+and never put the value in the URL.
 
 ---
 
@@ -533,6 +555,19 @@ colour comes from `data-status`), `pool`, `stocks`, `holders`, `transfers`.
 Detail fields: `hash`, `takenAt`, `eligible`, `pool`, `skipReason`, plus
 `[data-role="swaps-body"]` filled with `#tpl-swap-row` and
 `[data-role="transfers-body"]` filled with `#tpl-transfer-row`.
+
+Three more rows carry the anti-cheat evidence, and each one is `hidden` until the
+round document actually has it — an older round simply shows fewer rows:
+
+| row | field | content |
+|---|---|---|
+| `[data-row="snapshotMode"]` | `snapshotMode` | `round.snapshotMode` in words (`dual` → `two snapshots — weighted by the smaller balance`); an unknown value is printed verbatim, with the raw value in `title` |
+| `[data-row="snapshotOpen"]` | `snapshotOpen` | the opening snapshot: `2026-09-07 11:02 UTC · aa11bb22…ee11ff22`, full hash and ISO time in `title` |
+| `[data-row="snapshotClose"]` | `snapshotClose` | the closing snapshot, same shape |
+
+The two snapshots are read from `round.snapshotOpen`/`round.snapshotClose`,
+`round.openSnapshot`/`round.closeSnapshot` or `round.snapshots.open`/`.close` —
+whichever the server sends. Never synthesise one from the other.
 Tx links: set `href` to `https://solscan.io/tx/<sig>` and the text to the
 truncated signature; when `tx === null` replace the anchor's text with
 `simulated` (DRY_RUN) or `—` and remove the `href`.
@@ -544,7 +579,25 @@ Never render a transfer or a tx that the API did not return.
 ## 12. How it works / footer
 
 `#step-interval`, `#step-eligible-pct`, `#rule-*` — rewrite from `/api/config`
-so the prose matches the running server. `#footer-mode` → `mode DRY_RUN`,
+so the prose matches the running server.
+
+Step 2 is the anti-cheat rule and belongs entirely to `/api/config.rules`:
+
+- `#step-snapshot-title` / `#step-snapshot-text` are rewritten from
+  `rules.antiCheat` and `rules.openSnapshotWindowMin`. With `antiCheat === true`
+  the copy says two snapshots — one `openSnapshotWindowMin` before the mark, one
+  at the drop — and that the wallet is weighted by the **smaller** of the two, so
+  buying after the first snapshot pays nothing that round (the first drop is the
+  round after) and selling before the drop pays nothing either. With
+  `antiCheat === false` it states the single-snapshot rule.
+- When the server sends no `antiCheat` flag at all, the shipped markup is left
+  exactly as it is. The page never claims a rule the running server did not
+  report.
+- The rewrite rebuilds `#step-snapshot-text`, so it re-creates the
+  `#step-interval` span inside it. Run it **before** the basket's `renderConfig`,
+  which writes into that span.
+- `#rounds-foot-note` states the same rule in one line, from the same flags plus
+  `rules.jitterMin`. `#footer-mode` → `mode DRY_RUN`,
 `#footer-api` → the API base host, `#footer-updated` → last successful fetch
 time. `#footer-source` is a plain sentence today; replace it with an anchor only
 when a real repository URL exists.
@@ -664,6 +717,10 @@ If you find yourself writing `style.color` or `style.background`, stop and use a
 4. Skipped rounds are shown, with their reason (`no_token`, `low_pool`,
    `no_holders`). They are evidence the keeper ran, not a failure to hide.
 5. No number appears on screen that did not come from the API this session.
+6. The vault address is never rendered, and the page never tells anyone to send
+   SOL anywhere. The balance is shown; the address is not (§10).
+7. The contract-address button copies `config.token.mint` or nothing at all. No
+   placeholder that reads like an address, ever.
 
 ---
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>STOCKDROP — your memecoin buys you Wall Street</title>
+<title>STOXVAULT — your memecoin buys you Wall Street</title>
 <meta name="description" content="Creator fees buy real tokenised stocks every 6 hours and send them to holders. You pick the stocks.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#F4F5F7" media="(prefers-color-scheme: light)">
@@ -16,7 +16,7 @@
 <link rel="apple-touch-icon" href="/assets/favicon.svg">
 
 <meta property="og:type" content="website">
-<meta property="og:title" content="STOCKDROP — your memecoin buys you Wall Street">
+<meta property="og:title" content="STOXVAULT — your memecoin buys you Wall Street">
 <meta property="og:description" content="Creator fees buy real tokenised stocks every 6 hours and send them to holders. You pick the stocks.">
 <meta property="og:image" content="/assets/logo.svg">
 <meta name="twitter:card" content="summary">
@@ -42,7 +42,7 @@
 <header class="site-header" id="site-header">
   <div class="shell">
     <nav class="nav" aria-label="Primary">
-      <a class="nav__brand" href="#main" aria-label="STOCKDROP home">
+      <a class="nav__brand" href="#main" aria-label="STOXVAULT home">
         <svg class="nav__logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
           <rect x="6.5" y="13" width="1" height="16" rx="0.5" fill="currentColor"/>
           <rect x="4" y="17" width="6" height="8" rx="1" fill="currentColor"/>
@@ -52,7 +52,7 @@
           <rect x="22" y="4" width="6" height="9" rx="1" fill="var(--accent)"/>
           <path d="M22 18h6l-3 5z" fill="var(--accent)"/>
         </svg>
-        <span class="nav__wordmark">STOCKDROP</span>
+        <span class="nav__wordmark">STOXVAULT</span>
       </a>
 
       <ul class="nav__links" id="nav-links">
@@ -84,6 +84,17 @@
           </svg>
           <svg class="btn__icon" id="theme-icon-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true" hidden>
             <path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5 5.8 5.8 0 1 0 13.5 9.6z"/>
+          </svg>
+        </button>
+
+        <!-- Copies the coin's contract address. Disabled until the mint exists:
+             the label still names the ticker, and the title says why. -->
+        <button class="btn nav__coin" id="btn-copy-ca" type="button"
+                title="The contract address is not available until launch"
+                aria-label="Contract address not available until launch" disabled>
+          <span class="mono nav__coin-ticker" id="coin-ticker">$STOXVAULT</span>
+          <svg class="btn__icon btn__icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+            <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-1a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5V9A1.5 1.5 0 0 0 4 10.5h1"/>
           </svg>
         </button>
 
@@ -323,9 +334,9 @@
         <div class="pane pane--empty" id="basket-picks-empty">
           <div class="state-block">
             <p class="state-block__title">No stocks selected</p>
-            <p class="state-block__text">Add between two and five stocks below, or start from the default basket that holders who pick nothing receive: <span data-default-basket>the top five by underlying market cap, 20% each</span>.</p>
+            <p class="state-block__text">Add between two and five stocks below, or start from a suggested basket of the top five. Save nothing at all and you receive the default instead: <span data-default-basket>the top five by underlying market cap, 20% each</span>.</p>
             <span class="state-block__actions">
-              <button class="btn btn--sm" id="btn-empty-default" type="button">Use the default basket</button>
+              <button class="btn btn--sm" id="btn-empty-default" type="button">Use the suggested basket</button>
             </span>
           </div>
         </div>
@@ -436,9 +447,16 @@
           <dl class="kv">
             <div class="kv__row"><dt class="kv__key">Your balance</dt><dd class="kv__val skel-text" id="proj-balance">—</dd></div>
             <div class="kv__row"><dt class="kv__key">Eligible</dt><dd class="kv__val" id="proj-eligibility">—</dd></div>
+            <div class="kv__row" id="proj-cycle-row" hidden><dt class="kv__key">Held the whole cycle</dt><dd class="kv__val" id="proj-cycle">—</dd></div>
             <div class="kv__row"><dt class="kv__key">Share of pool</dt><dd class="kv__val skel-text" id="proj-share">—</dd></div>
             <div class="kv__row"><dt class="kv__key">Pool now</dt><dd class="kv__val skel-text" id="proj-pool">—</dd></div>
           </dl>
+          <!-- The "you bought this cycle, your first drop is the round after"
+               case. Calm, not alarming: it is a normal state, not an error. -->
+          <div class="callout callout--info" id="proj-cycle-note" style="margin-top:12px" hidden>
+            <p class="callout__title" id="proj-cycle-note-title">Your first drop is the next round</p>
+            <p class="callout__text" id="proj-cycle-note-text"></p>
+          </div>
           <p class="hint" id="proj-note">Amounts are estimates until the round runs.</p>
         </div>
 
@@ -870,25 +888,10 @@
   <div class="vault">
     <div class="panel">
       <div class="panel__head">
-        <h3 class="panel__title">Vault address</h3>
-        <a class="link" id="vault-explorer" href="https://solscan.io/account/769fv6KK6SAQ5FBAXdUZLdrppdHn5CqqgJBpFCLyf9up" target="_blank" rel="noopener noreferrer">Explorer</a>
+        <h3 class="panel__title">Balance and pool</h3>
       </div>
       <div class="panel__body">
-        <div class="addr-block">
-          <span class="addr addr--lg mono" id="vault-address">769fv6KK6SAQ5FBAXdUZLdrppdHn5CqqgJBpFCLyf9up</span>
-          <button class="btn btn--icon" id="btn-copy-vault" type="button" aria-label="Copy vault address">
-            <svg class="btn__icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-              <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-1a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5V9A1.5 1.5 0 0 0 4 10.5h1"/>
-            </svg>
-          </button>
-        </div>
-
-        <div class="callout" style="margin-top:16px">
-          <p class="callout__title">Sending SOL here funds the next drop</p>
-          <p class="callout__text">Send SOL on Solana mainnet only. Anything sent to this address is swapped into stocks and distributed to eligible holders at the next round. It is not a deposit and it cannot be withdrawn.</p>
-        </div>
-
-        <dl class="kv" style="margin-top:16px" id="vault-figures" data-state="loading">
+        <dl class="kv" id="vault-figures" data-state="loading">
           <div class="kv__row"><dt class="kv__key">Balance</dt><dd class="kv__val skel-text" id="vault-balance-sol">—</dd></div>
           <div class="kv__row"><dt class="kv__key">Balance (USD)</dt><dd class="kv__val skel-text" id="vault-balance-usd">—</dd></div>
           <div class="kv__row"><dt class="kv__key">Fee reserve</dt><dd class="kv__val skel-text" id="vault-reserve">—</dd></div>
@@ -1092,10 +1095,14 @@
       <h3 class="step__title">Fees land in the vault</h3>
       <p class="step__text">Creator fees from the token accumulate as SOL in one public wallet. Its balance minus a small fee reserve is the pool.</p>
     </li>
-    <li class="step">
+    <li class="step" id="step-snapshot">
       <span class="step__num">STEP 2</span>
-      <h3 class="step__title">A snapshot is taken</h3>
-      <p class="step__text">Every <span id="step-interval">6</span> hours, at a random offset within ±10 minutes of the mark, so the exact moment cannot be gamed.</p>
+      <!-- Both of these are rewritten from /api/config.rules (antiCheat,
+           openSnapshotWindowMin) so the prose cannot drift from the keeper.
+           The shipped text describes the single-snapshot rule, which is what a
+           server with the anti-cheat rule off actually does. -->
+      <h3 class="step__title" id="step-snapshot-title">A snapshot is taken</h3>
+      <p class="step__text" id="step-snapshot-text">Every <span id="step-interval">6</span> hours, at a random offset within ±10 minutes of the mark, so the exact moment cannot be gamed.</p>
     </li>
     <li class="step">
       <span class="step__num">STEP 3</span>
@@ -1129,30 +1136,23 @@
   <div class="shell">
     <div class="foot">
       <div class="foot__disclaimers">
-        <p class="foot__disclaimer"><strong class="strong">Nothing here is investment advice.</strong> STOCKDROP is an experiment in distributing token fees. Do your own research and assume you can lose everything you put in.</p>
-        <p class="foot__disclaimer">xStocks are tokenised equity products <strong class="strong">issued by Backed Finance</strong>. STOCKDROP does not issue, custody, guarantee or endorse them, and holding one is not the same as owning the underlying share.</p>
+        <p class="foot__disclaimer"><strong class="strong">Nothing here is investment advice.</strong> STOXVAULT is an experiment in distributing token fees. Do your own research and assume you can lose everything you put in.</p>
+        <p class="foot__disclaimer">xStocks are tokenised equity products <strong class="strong">issued by Backed Finance</strong>. STOXVAULT does not issue, custody, guarantee or endorse them, and holding one is not the same as owning the underlying share.</p>
         <p class="foot__disclaimer">This project is <strong class="strong">not affiliated with, endorsed by or connected to</strong> Jupiter, Backed Finance, Solana Labs, any exchange, or any listed company or issuer. All company names and tickers are the property of their owners.</p>
-        <p class="foot__disclaimer">Preferences are stored off-chain and are public. Connecting a wallet signs a message only — STOCKDROP never asks you to sign a transaction and can never move your funds.</p>
+        <p class="foot__disclaimer">Preferences are stored off-chain and are public. Connecting a wallet signs a message only — STOXVAULT never asks you to sign a transaction and can never move your funds.</p>
       </div>
 
       <div class="stack">
         <div>
-          <p class="eyebrow">Vault address</p>
-          <div class="addr-block" style="margin-top:8px">
-            <span class="addr mono" id="footer-vault-address">769fv6KK6SAQ5FBAXdUZLdrppdHn5CqqgJBpFCLyf9up</span>
-            <button class="btn btn--icon btn--sm" id="btn-copy-vault-footer" type="button" aria-label="Copy vault address">
-              <svg class="btn__icon btn__icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-                <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-1a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5V9A1.5 1.5 0 0 0 4 10.5h1"/>
-              </svg>
-            </button>
-          </div>
+          <p class="eyebrow">The rules</p>
+          <p class="foot__disclaimer" style="margin-top:8px">Every round is published in full — snapshot hashes, swaps and transfers — so anyone can recompute what was sent and to whom.</p>
         </div>
         <p class="hint" id="footer-source">Source code is published at launch.</p>
       </div>
     </div>
 
     <div class="foot__bottom">
-      <span>STOCKDROP</span>
+      <span>STOXVAULT</span>
       <span class="mono" id="footer-mode">mode —</span>
       <span class="mono" id="footer-api">api —</span>
       <span class="mono" id="footer-updated">—</span>
@@ -1436,6 +1436,11 @@
           <dl class="kv">
             <div class="kv__row"><dt class="kv__key">Snapshot hash</dt><dd class="kv__val mono addr--trunc" data-field="hash"></dd></div>
             <div class="kv__row"><dt class="kv__key">Snapshot taken</dt><dd class="kv__val" data-field="takenAt"></dd></div>
+            <!-- Anti-cheat rounds record two snapshots. These three rows stay
+                 hidden on a round document that does not carry them. -->
+            <div class="kv__row" data-row="snapshotMode" hidden><dt class="kv__key">Snapshot mode</dt><dd class="kv__val" data-field="snapshotMode"></dd></div>
+            <div class="kv__row" data-row="snapshotOpen" hidden><dt class="kv__key">Opening snapshot</dt><dd class="kv__val" data-field="snapshotOpen"></dd></div>
+            <div class="kv__row" data-row="snapshotClose" hidden><dt class="kv__key">Closing snapshot</dt><dd class="kv__val" data-field="snapshotClose"></dd></div>
             <div class="kv__row"><dt class="kv__key">Eligible holders</dt><dd class="kv__val" data-field="eligible"></dd></div>
             <div class="kv__row"><dt class="kv__key">Pool</dt><dd class="kv__val" data-field="pool"></dd></div>
             <div class="kv__row"><dt class="kv__key">Skip reason</dt><dd class="kv__val" data-field="skipReason"></dd></div>

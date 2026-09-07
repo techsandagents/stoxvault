@@ -1,5 +1,5 @@
 /**
- * STOCKDROP — the ticker tape.
+ * STOXVAULT — the ticker tape.
  *
  * Twenty real prices, scrolling. The marquee is a CSS animation that translates
  * the track by -50%, so the item list has to be written twice — the second copy

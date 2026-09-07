@@ -1,4 +1,4 @@
-# STOCKDROP (working name) — Spec v0.1
+# STOXVAULT (formerly STOCKDROP) — Spec
 
 Memecoin on Solana whose creator fees buy tokenised stocks (xStocks) and drop them
 directly into holders' wallets, weighted by each holder's own stock picks.

@@ -17,6 +17,93 @@ import { PickError, validatePicks, defaultPicks, effectiveBasket } from '../engi
 const MAX_SIGNATURE_CHARS = 200;
 const MAX_MESSAGE_CHARS = 2000;
 
+/**
+ * Where the keeper leaves the snapshot it takes when a cycle's window opens.
+ * The first key is the one this project writes; the second is accepted so an
+ * older or hand-written document still reads.
+ */
+const OPEN_SNAPSHOT_KV_KEYS = ['snapshot:open', 'open-snapshot'];
+
+const isDigits = (v) => typeof v === 'string' && /^\d+$/.test(v);
+
+/**
+ * A wallet's balance inside a snapshot document.
+ * `found` is the honest distinction between "held nothing" and "was not there".
+ * @returns {{found: boolean, raw: string|null}}
+ */
+export function snapshotBalanceOf(snapshot, wallet) {
+  if (!snapshot || typeof snapshot !== 'object') return { found: false, raw: null };
+  const rows = Array.isArray(snapshot.holders) ? snapshot.holders : null;
+  if (rows) {
+    for (const row of rows) {
+      if (row && row.wallet === wallet) {
+        const raw = String(row.balance ?? row.raw ?? '');
+        return { found: true, raw: isDigits(raw) ? raw : null };
+      }
+    }
+    return { found: false, raw: null };
+  }
+  const map = snapshot.balances;
+  if (map && typeof map === 'object' && !Array.isArray(map)) {
+    if (Object.prototype.hasOwnProperty.call(map, wallet)) {
+      const raw = String(map[wallet] ?? '');
+      return { found: true, raw: isDigits(raw) ? raw : null };
+    }
+    return { found: false, raw: null };
+  }
+  // A document with no holder rows at all cannot answer the question.
+  return { found: false, raw: null };
+}
+
+/**
+ * Is this opening snapshot the one for the cycle that is about to close?
+ *
+ * A snapshot from a previous cycle must never be presented as this cycle's, so
+ * anything taken on or before the previous mark (less the scheduler's jitter) is
+ * treated as absent rather than stale-but-usable.
+ */
+export function isCurrentCycleSnapshot(snapshot, cfg, nowMs) {
+  const takenMs = Date.parse(snapshot?.takenAt ?? '');
+  if (!Number.isFinite(takenMs)) return false;
+  const markMs = cfg.nextRoundAt(nowMs).getTime();
+  if (takenMs > nowMs + 60_000) return false; // dated in the future: not trustworthy
+  const mark = new Date(markMs).toISOString();
+  for (const field of ['mark', 'roundMark', 'scheduledAt', 'forRoundAt']) {
+    const value = snapshot?.[field];
+    if (typeof value === 'string' && value === mark) return true;
+  }
+  const cycleStartMs = markMs - cfg.intervalHours * 3600_000 - cfg.roundJitterMin * 60_000;
+  return takenMs > cycleStartMs;
+}
+
+/** Read the opening snapshot for the current cycle, or null when there is none. */
+async function currentOpenSnapshot({ cfg, db, nowMs }) {
+  const candidates = [];
+  if (typeof db.getKV === 'function') {
+    for (const key of OPEN_SNAPSHOT_KV_KEYS) {
+      try {
+        const doc = await db.getKV(key);
+        if (doc && typeof doc === 'object') candidates.push(doc);
+      } catch {
+        // A KV store that cannot answer means "unknown", not "no snapshot".
+      }
+    }
+  }
+  if (candidates.length === 0 && typeof db.latestRound === 'function') {
+    try {
+      const latest = await db.latestRound();
+      const doc = latest?.openSnapshot ?? latest?.snapshots?.open ?? null;
+      if (doc && typeof doc === 'object') candidates.push(doc);
+    } catch {
+      // same: absence of evidence only.
+    }
+  }
+  for (const doc of candidates) {
+    if (isCurrentCycleSnapshot(doc, cfg, nowMs)) return doc;
+  }
+  return null;
+}
+
 /** raw base units -> ui number for the memecoin's decimals. */
 function toUi(raw, decimals) {
   if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return null;
@@ -27,12 +114,157 @@ function toUi(raw, decimals) {
   return Number(`${whole}${frac ? `.${frac}` : ''}`);
 }
 
+/** Numbers inside a sentence, grouped, never dressed up with false precision. */
+function fmtUi(value) {
+  return Number.isFinite(value) ? value.toLocaleString('en-US', { maximumFractionDigits: 6 }) : String(value);
+}
+
+/**
+ * Where this wallet stands in the cycle that is about to close.
+ *
+ * "You get nothing this round" is the one thing anti-cheat introduces that a
+ * holder cannot work out for themselves, so every branch here says which of the
+ * two balances decided it, in words, and uses null wherever the chain or the
+ * keeper has not actually told us something.
+ *
+ * @param {object} args
+ * @param {object} args.cfg
+ * @param {string} args.wallet
+ * @param {{raw: string, ui: number}|null} args.balance current balance, or null when unreadable
+ * @param {object|null} args.openSnapshot this cycle's opening snapshot, or null
+ * @param {number} args.nowMs
+ */
+export function buildCycle({ cfg, wallet, balance, openSnapshot, nowMs }) {
+  const antiCheat = Boolean(cfg.antiCheat);
+  const windowMin = cfg.openSnapshotWindowMin;
+  const markMs = cfg.nextRoundAt(nowMs).getTime();
+  const symbol = cfg.tokenSymbol || 'tokens';
+  const thresholdUi = cfg.eligibleThresholdUi;
+
+  const cycle = {
+    antiCheat,
+    windowMin,
+    opensAt: new Date(markMs - windowMin * 60_000).toISOString(),
+    nextRoundAt: new Date(markMs).toISOString(),
+    openSnapshotAt: null,
+    openSnapshotHash: null,
+    inOpenSnapshot: null,
+    openBalanceRaw: null,
+    openBalanceUi: null,
+    currentBalanceRaw: null,
+    currentBalanceUi: null,
+    effectiveBalanceRaw: null,
+    effectiveBalanceUi: null,
+    thresholdRaw: cfg.eligibleThresholdRaw,
+    thresholdUi,
+    eligible: null,
+    note: '',
+  };
+
+  if (!cfg.launched) {
+    cycle.note = 'The coin has not launched yet, so there is no cycle to stand in and no drop to miss.';
+    return cycle;
+  }
+  if (!balance || !isDigits(balance.raw)) {
+    cycle.note = 'Your balance could not be read from the chain just now, so this cycle cannot be judged.';
+    return cycle;
+  }
+
+  const current = BigInt(balance.raw);
+  const threshold = BigInt(cfg.eligibleThresholdRaw);
+  cycle.currentBalanceRaw = balance.raw;
+  cycle.currentBalanceUi = toUi(balance.raw, cfg.tokenDecimals);
+
+  const belowNote = `You hold ${fmtUi(cycle.currentBalanceUi)} ${symbol}, under the ${fmtUi(thresholdUi)} needed to qualify, so the next round pays you nothing.`;
+
+  if (!antiCheat) {
+    cycle.effectiveBalanceRaw = balance.raw;
+    cycle.effectiveBalanceUi = cycle.currentBalanceUi;
+    cycle.eligible = current >= threshold && current > 0n;
+    cycle.note = cycle.eligible
+      ? 'Anti-cheat is off: only your balance when the round snapshot is taken counts, and it clears the threshold right now.'
+      : belowNote;
+    return cycle;
+  }
+
+  if (openSnapshot) {
+    cycle.openSnapshotAt = typeof openSnapshot.takenAt === 'string' ? openSnapshot.takenAt : null;
+    cycle.openSnapshotHash = typeof openSnapshot.hash === 'string' ? openSnapshot.hash : null;
+  }
+
+  if (current < threshold) {
+    // Whatever the opening snapshot said, the round pays on the smaller of the
+    // two, and the smaller one is already under the bar.
+    cycle.eligible = false;
+    if (openSnapshot) {
+      const seen = snapshotBalanceOf(openSnapshot, wallet);
+      if (seen.found && seen.raw === null) {
+        cycle.inOpenSnapshot = null;
+      } else {
+        cycle.inOpenSnapshot = seen.found;
+        const open = seen.found ? BigInt(seen.raw) : 0n;
+        cycle.openBalanceRaw = open.toString();
+        cycle.openBalanceUi = toUi(cycle.openBalanceRaw, cfg.tokenDecimals);
+        const effective = open < current ? open : current;
+        cycle.effectiveBalanceRaw = effective.toString();
+        cycle.effectiveBalanceUi = toUi(cycle.effectiveBalanceRaw, cfg.tokenDecimals);
+      }
+    }
+    cycle.note = belowNote;
+    return cycle;
+  }
+
+  if (!openSnapshot) {
+    cycle.note =
+      `No opening snapshot has been taken for this cycle yet. When one is, the round pays on the smaller of what you hold then and at the round itself, `
+      + `so holding at least ${fmtUi(thresholdUi)} ${symbol} through the whole window is what qualifies you.`;
+    return cycle;
+  }
+
+  const seen = snapshotBalanceOf(openSnapshot, wallet);
+  cycle.inOpenSnapshot = seen.found;
+
+  if (seen.found && seen.raw === null) {
+    // The snapshot names the wallet but not a number we can trust. Say nothing
+    // rather than guess a balance.
+    cycle.inOpenSnapshot = null;
+    cycle.note = 'This cycle’s opening snapshot does not record a readable balance for your wallet, so your standing cannot be judged yet.';
+    return cycle;
+  }
+
+  const open = seen.found ? BigInt(seen.raw) : 0n;
+  cycle.openBalanceRaw = open.toString();
+  cycle.openBalanceUi = toUi(cycle.openBalanceRaw, cfg.tokenDecimals);
+
+  const effective = open < current ? open : current;
+  cycle.effectiveBalanceRaw = effective.toString();
+  cycle.effectiveBalanceUi = toUi(cycle.effectiveBalanceRaw, cfg.tokenDecimals);
+  cycle.eligible = effective >= threshold && effective > 0n;
+
+  const openedAt = cycle.openSnapshotAt ? ` (taken ${cycle.openSnapshotAt})` : '';
+  if (!seen.found) {
+    cycle.note =
+      `You were not in this cycle’s opening snapshot${openedAt}, so you bought during the cycle: this round pays you nothing and your first drop is the next one.`;
+  } else if (effective < threshold) {
+    cycle.note =
+      `You held ${fmtUi(cycle.openBalanceUi)} ${symbol} when this cycle opened${openedAt}, under the ${fmtUi(thresholdUi)} needed, so this round pays nothing even though you hold more now.`;
+  } else if (current < open) {
+    cycle.note =
+      `Your balance fell during this cycle, from ${fmtUi(cycle.openBalanceUi)} to ${fmtUi(cycle.currentBalanceUi)} ${symbol}, so the smaller figure is what this round counts.`;
+  } else {
+    cycle.note =
+      `You have held at least ${fmtUi(cycle.openBalanceUi)} ${symbol} all cycle, so you are in for the round about to run.`;
+  }
+  return cycle;
+}
+
 /**
  * The `me` document, shared by GET /api/me and the response to a successful
  * POST /api/auth/verify (the contract says they are the same object).
  */
-export async function buildMe({ cfg, db, services, wallet }) {
+export async function buildMe({ cfg, db, services, wallet, now = Date.now }) {
   const { universe, holders, stats } = services;
+  const nowMs = now();
 
   const [prefs, stocks] = await Promise.all([db.getPrefs(wallet), universe.stocks()]);
 
@@ -93,6 +325,8 @@ export async function buildMe({ cfg, db, services, wallet }) {
     }
   }
 
+  const openSnapshot = cfg.launched && cfg.antiCheat ? await currentOpenSnapshot({ cfg, db, nowMs }) : null;
+
   return {
     wallet,
     balance,
@@ -100,7 +334,8 @@ export async function buildMe({ cfg, db, services, wallet }) {
     effectivePicks: basket.picks,
     picksSource: basket.source,
     projected,
-    nextRoundAt: cfg.nextRoundAtIso(),
+    cycle: buildCycle({ cfg, wallet, balance, openSnapshot, nowMs }),
+    nextRoundAt: cfg.nextRoundAtIso(nowMs),
   };
 }
 

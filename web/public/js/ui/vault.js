@@ -1,19 +1,15 @@
 /**
- * STOCKDROP — the vault panel.
+ * STOXVAULT — the vault panel.
  *
  * One wallet, one purpose: its balance minus the fee reserve is the pool for the
- * next round. The address in the markup is the real, shipped one — this module
- * verifies it against `/api/config` and complains loudly if the server ever
- * disagrees, rather than silently rewriting what the page promises.
+ * next round. The panel reports what the vault holds and what the next round may
+ * spend — the address itself is deliberately not rendered anywhere on the site,
+ * so `/api/vault.address` is read past and never printed.
  */
 
 import { fmtSol, fmtUsd, fmtTokenAmount, fmtTokenAmountExact, truncAddr, fmtTimeUtc, isoOf, monogram, DASH } from '../format.js';
-import { copyToClipboard, toast } from './toast.js';
 
 export function createVault({ onRetry } = {}) {
-  const addressEl = document.getElementById('vault-address');
-  const footerAddressEl = document.getElementById('footer-vault-address');
-  const explorerEl = document.getElementById('vault-explorer');
   const figures = document.getElementById('vault-figures');
   const balanceSol = document.getElementById('vault-balance-sol');
   const balanceUsd = document.getElementById('vault-balance-usd');
@@ -25,25 +21,6 @@ export function createVault({ onRetry } = {}) {
   const holdingsBody = document.getElementById('vault-holdings-body');
   const holdingsCount = document.getElementById('vault-holdings-count');
   const tpl = document.getElementById('tpl-holding-row');
-
-  const copyMain = document.getElementById('btn-copy-vault');
-  const copyFooter = document.getElementById('btn-copy-vault-footer');
-
-  /** The address the page shipped with. Nothing here ever overwrites it. */
-  const shippedAddress = (addressEl?.textContent || '').trim();
-
-  for (const [btn, label] of [
-    [copyMain, 'Vault address copied.'],
-    [copyFooter, 'Vault address copied.'],
-  ]) {
-    if (!btn) continue;
-    btn.addEventListener('click', () => copyToClipboard(shippedAddress, btn, label));
-  }
-
-  if (addressEl && shippedAddress) addressEl.title = shippedAddress;
-  if (footerAddressEl) footerAddressEl.title = shippedAddress;
-
-  let verified = false;
 
   function holdingRow(holding, stockIndex) {
     const node = tpl.content.firstElementChild.cloneNode(true);
@@ -83,35 +60,10 @@ export function createVault({ onRetry } = {}) {
   }
 
   return {
-    /**
-     * Cross-check the shipped address against the server's, once, at boot.
-     * A mismatch is a real problem — somebody is looking at the wrong vault —
-     * so it is surfaced rather than papered over.
-     */
-    verifyAddress(configAddress) {
-      if (verified || !configAddress || !shippedAddress) return;
-      verified = true;
-      if (configAddress !== shippedAddress) {
-        toast({
-          kind: 'error',
-          title: 'Vault address mismatch',
-          text: `The page shows ${truncAddr(shippedAddress)} but the API reports ${truncAddr(
-            configAddress,
-          )}. Do not send anything until this is resolved.`,
-          key: 'vault-mismatch',
-          timeout: 0,
-        });
-      }
-      if (explorerEl && configAddress === shippedAddress) {
-        explorerEl.href = `https://solscan.io/account/${encodeURIComponent(shippedAddress)}`;
-      }
-    },
-
     /** `/api/config` gives the minimum pool before the countdown even lands. */
     renderConfig(config) {
       const min = config?.rules?.minRoundPoolSol;
       if (minPoolEl && Number.isFinite(Number(min))) minPoolEl.textContent = `${fmtSol(min, 2)} SOL`;
-      this.verifyAddress(config?.vault?.address);
     },
 
     /** @param {object} vault the `/api/vault` document */
@@ -131,7 +83,7 @@ export function createVault({ onRetry } = {}) {
       }
       if (figures) figures.dataset.state = 'ready';
 
-      this.verifyAddress(vault.address);
+      // `vault.address` is deliberately ignored: the site does not show it.
 
       const holdings = Array.isArray(vault.holdings) ? vault.holdings : [];
       if (holdingsCount) {
@@ -165,10 +117,6 @@ export function createVault({ onRetry } = {}) {
       if (updatedEl) updatedEl.textContent = 'could not reach the API';
       if (figures) figures.dataset.state = 'ready';
       if (holdingsTable) holdingsTable.dataset.state = 'error';
-    },
-
-    get address() {
-      return shippedAddress;
     },
   };
 }

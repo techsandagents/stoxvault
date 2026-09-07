@@ -19,6 +19,63 @@ const LAMPORTS_PER_SOL = 1_000_000_000;
 
 const lamportsToSol = (lamports) => Math.round((Number(lamports) / LAMPORTS_PER_SOL) * 1e9) / 1e9;
 
+/**
+ * A snapshot's metadata — what it is and when it was taken — with the
+ * per-holder rows removed, so it is safe to repeat in a list response.
+ * @returns {object|null} null when there is no such snapshot on the round
+ */
+export function snapshotSummary(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
+  const { holders, balances, ...rest } = snapshot;
+  const holderCount = Array.isArray(holders)
+    ? holders.length
+    : Number.isFinite(Number(snapshot.holderCount))
+      ? Number(snapshot.holderCount)
+      : balances && typeof balances === 'object' && !Array.isArray(balances)
+        ? Object.keys(balances).length
+        : null;
+  return {
+    ...rest,
+    takenAt: typeof snapshot.takenAt === 'string' ? snapshot.takenAt : null,
+    hash: typeof snapshot.hash === 'string' ? snapshot.hash : null,
+    holderCount,
+  };
+}
+
+/**
+ * The two snapshots a round is judged on: the one taken when the cycle's window
+ * opened, and the one taken at the round itself. Rounds written before the
+ * anti-cheat rule existed carry only the second, and a round that skipped
+ * before snapshotting carries neither — both read as null rather than throwing.
+ */
+export function snapshotsOf(round) {
+  const open = round?.openSnapshot ?? round?.snapshots?.open ?? null;
+  const close = round?.closeSnapshot ?? round?.snapshots?.close ?? round?.snapshot ?? null;
+  return { open: snapshotSummary(open), close: snapshotSummary(close) };
+}
+
+/**
+ * Add the ledger's snapshot view to a round document.
+ *
+ * `snapshotMode` is copied, never inferred: only the keeper knows which rule it
+ * actually applied, so an older document that does not say gets null.
+ *
+ * In a list response the raw snapshot objects are replaced by their summaries,
+ * because a per-holder row must never reach a list — that is what the earlier
+ * heap fix was for, and a new snapshot field would walk straight back into it.
+ */
+export function withSnapshots(round, { list = false } = {}) {
+  if (!round || typeof round !== 'object') return round;
+  const out = { ...round };
+  out.snapshots = snapshotsOf(round);
+  out.snapshotMode = typeof round.snapshotMode === 'string' ? round.snapshotMode : null;
+  if (list) {
+    if ('openSnapshot' in out) out.openSnapshot = snapshotSummary(out.openSnapshot);
+    if ('closeSnapshot' in out) out.closeSnapshot = snapshotSummary(out.closeSnapshot);
+  }
+  return out;
+}
+
 export function createRoundsRouter({ cfg, db, services }) {
   const router = express.Router();
   const { universe, holders, stats } = services;
@@ -28,7 +85,12 @@ export function createRoundsRouter({ cfg, db, services }) {
     wrap(async (req, res) => {
       const { limit, offset } = parsePaging(req.query, { defaultLimit: 50, maxLimit: 200 });
       const page = await db.listRounds({ limit, offset });
-      res.json({ items: page.items, total: page.total, limit, offset });
+      res.json({
+        items: (Array.isArray(page.items) ? page.items : []).map((round) => withSnapshots(round, { list: true })),
+        total: page.total,
+        limit,
+        offset,
+      });
     }),
   );
 
@@ -140,7 +202,7 @@ export function createRoundsRouter({ cfg, db, services }) {
       const id = requireRoundId(req.params.id);
       const round = await db.getRound(id);
       if (!round) throw notFound('unknown_round', `no round with id ${id}`);
-      res.json(round);
+      res.json(withSnapshots(round));
     }),
   );
 

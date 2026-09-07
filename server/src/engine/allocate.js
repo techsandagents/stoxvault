@@ -63,6 +63,132 @@ function storedPct(value) {
 }
 
 /**
+ * Wallet -> balance for one snapshot, accepting either a holder array or a
+ * whole Snapshot document.
+ *
+ * A wallet that appears twice keeps its FIRST row, exactly as computeEligible
+ * does, so combining snapshots can never change a balance that the existing
+ * eligibility filter would have used.
+ */
+function snapshotBalances(input, what) {
+  const list = Array.isArray(input) ? input : Array.isArray(input?.holders) ? input.holders : [];
+  const out = new Map();
+  for (const holder of list) {
+    if (!holder || typeof holder.wallet !== 'string' || holder.wallet === '') continue;
+    if (out.has(holder.wallet)) continue;
+    out.set(holder.wallet, toNonNegativeBigInt(holder.balance, `${what} balance of ${holder.wallet}`));
+  }
+  return out;
+}
+
+/**
+ * combineSnapshots(openHolders, closeHolders) -> { holders, stats }
+ *
+ * The full-cycle rule. A wallet is paid for a cycle only on what it held for
+ * the WHOLE of it, so its weight is
+ *
+ *     balance = min(openBalance, closeBalance)      (BigInt, exact)
+ *
+ * with a wallet that is absent from a snapshot counted as zero there. That one
+ * line is the whole anti-cheat:
+ *
+ *   - bought after the open snapshot  -> open 0  -> min 0 -> no drop this round,
+ *     and it is present in the next cycle's open snapshot, so it is paid then;
+ *   - sold before the close snapshot  -> close 0 -> min 0 -> no drop;
+ *   - topped up mid-cycle             -> weighted on the smaller (held-all-cycle) balance;
+ *   - held steady                     -> unaffected.
+ *
+ * Eligibility is applied to this same minimum by computeEligible, so a wallet
+ * has to clear the threshold for the whole cycle rather than at one instant.
+ *
+ * Every wallet seen in either snapshot is returned — including the ones whose
+ * minimum is zero, which carry no weight (computeEligible drops a zero balance)
+ * but are counted in `stats` and flagged, so the site can say *why* a wallet got
+ * nothing instead of leaving someone to guess.
+ *
+ * @param {{wallet: string, balance: string|bigint|number}[]|{holders: object[]}} openHolders
+ * @param {{wallet: string, balance: string|bigint|number}[]|{holders: object[]}} closeHolders
+ * @returns {{
+ *   holders: {wallet: string, balance: string, openBalance: string, closeBalance: string,
+ *             joinedThisCycle: boolean, reduced: boolean}[],
+ *   stats: {wallets: number, openHolders: number, closeHolders: number, held: number,
+ *           joinedThisCycle: number, leftThisCycle: number, reduced: number, steady: number,
+ *           zeroWeight: number, openWeight: string, closeWeight: string, weight: string}
+ * }}
+ */
+export function combineSnapshots(openHolders, closeHolders) {
+  const open = snapshotBalances(openHolders, 'open snapshot');
+  const close = snapshotBalances(closeHolders, 'close snapshot');
+
+  const wallets = new Set(open.keys());
+  for (const wallet of close.keys()) wallets.add(wallet);
+
+  const holders = [];
+  const stats = {
+    wallets: wallets.size,
+    openHolders: 0,
+    closeHolders: 0,
+    held: 0,
+    joinedThisCycle: 0,
+    leftThisCycle: 0,
+    reduced: 0,
+    steady: 0,
+    zeroWeight: 0,
+    openWeight: '0',
+    closeWeight: '0',
+    weight: '0',
+  };
+
+  let openWeight = ZERO;
+  let closeWeight = ZERO;
+  let weight = ZERO;
+
+  for (const wallet of wallets) {
+    const openBalance = open.get(wallet) ?? ZERO;
+    const closeBalance = close.get(wallet) ?? ZERO;
+    const balance = openBalance < closeBalance ? openBalance : closeBalance;
+
+    const joinedThisCycle = openBalance === ZERO && closeBalance > ZERO;
+    const reduced = openBalance > ZERO && closeBalance > ZERO && openBalance !== closeBalance;
+
+    if (openBalance > ZERO) stats.openHolders += 1;
+    if (closeBalance > ZERO) stats.closeHolders += 1;
+    if (balance > ZERO) stats.held += 1;
+    else stats.zeroWeight += 1;
+    if (joinedThisCycle) stats.joinedThisCycle += 1;
+    if (openBalance > ZERO && closeBalance === ZERO) stats.leftThisCycle += 1;
+    if (reduced) stats.reduced += 1;
+    if (openBalance > ZERO && closeBalance > ZERO && openBalance === closeBalance) stats.steady += 1;
+
+    openWeight += openBalance;
+    closeWeight += closeBalance;
+    weight += balance;
+
+    holders.push({
+      wallet,
+      balance: balance.toString(),
+      openBalance: openBalance.toString(),
+      closeBalance: closeBalance.toString(),
+      joinedThisCycle,
+      reduced,
+    });
+  }
+
+  holders.sort((a, b) => {
+    const ab = BigInt(a.balance);
+    const bb = BigInt(b.balance);
+    if (ab !== bb) return bb > ab ? 1 : -1;
+    return a.wallet < b.wallet ? -1 : a.wallet > b.wallet ? 1 : 0;
+  });
+
+  stats.openWeight = openWeight.toString();
+  stats.closeWeight = closeWeight.toString();
+  stats.weight = weight.toString();
+
+  return { holders, stats };
+}
+
+/**
  * eligibleThreshold(supplyRaw, eligibleBps) -> bigint
  * floor(supply * bps / 10000). 0.1% of a 1B/6dp supply = 1,000,000 tokens.
  */
@@ -80,6 +206,13 @@ export function eligibleThreshold(supplyRaw, eligibleBps) {
  * threshold itself computes to zero.
  * Returned holders are `{ wallet, balance }` with balance a base-unit string,
  * sorted by balance descending then wallet ascending (deterministic).
+ *
+ * Rows produced by combineSnapshots carry `openBalance` / `closeBalance` /
+ * `reduced` alongside the balance; those are passed through unchanged so the
+ * round ledger can show what a holder held at each end of the cycle. The
+ * balance tested against the threshold is whatever the caller supplied — for a
+ * combined snapshot that is min(open, close), so a wallet has to clear the
+ * threshold for the whole cycle, not merely at the close.
  */
 export function computeEligible(holders, opts = {}) {
   const threshold = eligibleThreshold(opts.supplyRaw ?? 0, opts.eligibleBps ?? 0);
@@ -104,7 +237,15 @@ export function computeEligible(holders, opts = {}) {
     if (balance === ZERO) continue;
     if (balance < threshold) continue;
     seen.add(holder.wallet);
-    out.push({ wallet: holder.wallet, balance: balance.toString() });
+    const row = { wallet: holder.wallet, balance: balance.toString() };
+    if (holder.openBalance !== undefined && holder.openBalance !== null) {
+      row.openBalance = toNonNegativeBigInt(holder.openBalance, `open balance of ${holder.wallet}`).toString();
+    }
+    if (holder.closeBalance !== undefined && holder.closeBalance !== null) {
+      row.closeBalance = toNonNegativeBigInt(holder.closeBalance, `close balance of ${holder.wallet}`).toString();
+    }
+    if (holder.reduced === true) row.reduced = true;
+    out.push(row);
   }
 
   out.sort((a, b) => {

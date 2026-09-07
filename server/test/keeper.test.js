@@ -21,10 +21,17 @@ import path from 'node:path';
 import { ComputeBudgetProgram, Keypair, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 
 import { openDb } from '../src/db/index.js';
-import { applySwapResults, buildRoundPlan } from '../src/engine/index.js';
+import { applySwapResults, buildRoundPlan, snapshotHash } from '../src/engine/index.js';
 import { b58encode } from '../src/chain/vault.js';
-import { rebuildPlan, roundIdFor, runRound } from '../src/keeper/runner.js';
-import { jitterFor, nextMark, planNext, start } from '../src/keeper/scheduler.js';
+import {
+  lastCloseKeyFor,
+  openSnapshotKeyFor,
+  rebuildPlan,
+  roundIdFor,
+  runRound,
+  takeOpenSnapshot,
+} from '../src/keeper/runner.js';
+import { jitterFor, nextMark, openOffsetFor, planNext, planOpenSnapshot, start } from '../src/keeper/scheduler.js';
 
 const { buildConfig } = await import('../src/config.js');
 
@@ -753,8 +760,10 @@ test('scheduler: a negative jitter never re-fires the same mark', async () => {
         return { id: `r${runs.length}`, status: 'DONE', finishedAt: new Date(clock).toISOString(), error: null };
       },
       now: () => clock,
-      setTimer: (fn, ms) => {
-        timers.push({ fn, ms });
+      // Only the ROUND timers matter here; the open-snapshot timer of each
+      // cycle has its own test below.
+      setTimer: (fn, ms, kind = 'round') => {
+        if (kind === 'round') timers.push({ fn, ms });
         return timers.length;
       },
       clearTimer: () => {},
@@ -830,8 +839,8 @@ test('scheduler: resumes an unfinished round on boot before scheduling the next 
         return { id: deps.roundId ?? 'r_new', status: 'DONE', finishedAt: new Date().toISOString(), error: null };
       },
       now: () => Date.parse('2026-09-07T11:00:00Z'),
-      setTimer: (fn, ms) => {
-        timers.push({ fn, ms });
+      setTimer: (fn, ms, kind = 'round') => {
+        timers.push({ fn, ms, kind });
         return timers.length;
       },
       clearTimer: () => {},
@@ -849,15 +858,26 @@ test('scheduler: resumes an unfinished round on boot before scheduling the next 
     assert.equal(status.nextRoundId, 'r_2026-09-07T12');
     assert.equal(status.nextMark, '2026-09-07T12:00:00.000Z');
     assert.equal(keeper.nextRoundAt(), status.nextRoundAt);
-    assert.equal(timers.length, 1, 'exactly one timer is armed');
-    assert.ok(timers[0].ms > 0 && timers[0].ms <= 3600_000 + 600_000);
+    const roundTimers = () => timers.filter((t) => t.kind === 'round');
+    assert.equal(roundTimers().length, 1, 'exactly one round timer is armed');
+    assert.ok(roundTimers()[0].ms > 0 && roundTimers()[0].ms <= 3600_000 + 600_000);
+    // 11:00 is deep inside the cycle that ends at 12:00, so that cycle's open
+    // snapshot window is long past: it is reported as missed, not faked.
+    assert.equal(timers.filter((t) => t.kind === 'open').length, 0);
+    assert.equal(status.nextOpenSnapshotStatus, 'missed');
+    assert.equal(status.nextOpenSnapshotRoundId, 'r_2026-09-07T12');
 
     // Firing the timer runs the scheduled round and arms the next one.
-    await timers[0].fn();
+    await roundTimers()[0].fn();
     assert.equal(runs.length, 2);
     assert.equal(runs[1].roundId, null);
     assert.equal(new Date(runs[1].scheduledAt).toISOString(), '2026-09-07T12:00:00.000Z');
-    assert.equal(timers.length, 2);
+    assert.equal(roundTimers().length, 2);
+    // The next cycle (12:00 -> 18:00) has not started snapshotting yet, so its
+    // open snapshot IS armed.
+    assert.equal(timers.filter((t) => t.kind === 'open').length, 1);
+    assert.equal(keeper.status().nextOpenSnapshotRoundId, 'r_2026-09-07T18');
+    assert.equal(keeper.status().nextOpenSnapshotStatus, 'armed');
 
     keeper.stop();
     assert.equal(keeper.nextRoundAt(), null);
@@ -1331,6 +1351,687 @@ test('scheduler: READ_ONLY has no keeper at all', async () => {
     assert.equal(keeper.status().enabled, false);
     assert.equal(keeper.nextRoundAt(), null);
     keeper.stop();
+  } finally {
+    await close();
+  }
+});
+
+/* ---------------------------------------------------------- anti-cheat */
+
+/**
+ * The full-cycle rule end to end.
+ *
+ * A cycle is judged by TWO snapshots — one taken at an unpredictable moment in
+ * its first hour, one at the round itself — and a wallet is weighted on
+ * min(open, close). These tests drive real rounds through the real store with
+ * the same injected fakes as everything above; nothing here touches a network.
+ */
+
+/** A wallet that is not one of the standing fixtures. */
+const NEWCOMER = address();
+
+const OPEN_HOLDERS = HOLDERS.slice(0, 3).map((h) => ({ ...h }));
+
+/** Build an open-snapshot document the way the scheduler would have stored it. */
+function openDoc(roundId, holders, takenAt = '2026-09-07T06:19:00.000Z') {
+  const doc = {
+    kind: 'open',
+    roundId,
+    mode: 'DRY_RUN',
+    takenAt,
+    slot: 310_900_000,
+    tokenMint: TOKEN_MINT,
+    supply: '1000000000000000',
+    holders: holders.map((h) => ({ wallet: h.wallet, balance: h.balance })),
+    holderCount: holders.length,
+    source: 'test-open',
+  };
+  doc.hash = snapshotHash(doc);
+  return doc;
+}
+
+/** makeFakes, with the close snapshot's holder set (and its instant) replaced. */
+function fakesWithClose(closeHolders, takenAt = '2026-09-07T11:58:00.000Z') {
+  const fakes = makeFakes();
+  fakes.holdersService = {
+    async snapshot() {
+      return {
+        takenAt,
+        slot: 311_000_000,
+        supply: '1000000000000000',
+        holders: closeHolders.map((h) => ({ wallet: h.wallet, balance: h.balance })),
+        source: 'test-holders',
+      };
+    },
+  };
+  return fakes;
+}
+
+const paid = (round, wallet) => round.transfers.filter((t) => t.wallet === wallet && t.status === 'DONE');
+const walletsIn = (round) => new Set(round.snapshot.holders.map((h) => h.wallet));
+
+test('anti-cheat: a wallet that bought mid-cycle is paid nothing now and weighted next round', async () => {
+  const { db, close } = await makeDb('anticheat-joined');
+  try {
+    const cfg = makeCfg();
+    const mark = '2026-09-07T12:00:00.000Z';
+    // The open snapshot of the 06:00 -> 12:00 cycle: NEWCOMER is not in it.
+    await db.setKV(openSnapshotKeyFor('r_2026-09-07T12', true), openDoc('r_2026-09-07T12', OPEN_HOLDERS));
+
+    const closeHolders = [...OPEN_HOLDERS, { wallet: NEWCOMER, balance: '9000000000000' }];
+    const first = await runRound({ cfg, db, ...fakesWithClose(closeHolders), scheduledAt: mark });
+
+    assert.equal(first.status, 'DONE', first.error ?? '');
+    assert.equal(first.snapshotMode, 'full-cycle');
+    assert.equal(first.antiCheat.enabled, true);
+    assert.equal(first.antiCheat.rule, 'weight = min(openBalance, closeBalance)');
+
+    // Nine million tokens bought minutes before the drop buy exactly nothing.
+    assert.equal(walletsIn(first).has(NEWCOMER), false, 'the mid-cycle buyer carries no weight');
+    assert.equal(paid(first, NEWCOMER).length, 0);
+    assert.deepEqual(
+      first.antiCheat.joinedThisCycle.map((h) => h.wallet),
+      [NEWCOMER],
+      'and the ledger says why, rather than leaving them to guess',
+    );
+    assert.equal(first.antiCheat.joinedThisCycle[0].closeBalance, '9000000000000');
+    assert.equal(first.antiCheat.stats.joinedThisCycle, 1);
+    assert.equal(first.antiCheat.stats.held, 3);
+
+    // Everyone who did hold all cycle was paid as before.
+    assert.equal(first.stats.eligibleHolders, 3);
+    for (const holder of OPEN_HOLDERS) assert.ok(paid(first, holder.wallet).length > 0);
+
+    // The close snapshot became the next cycle's open, so the newcomer is in it.
+    const nextOpen = await db.getKV(openSnapshotKeyFor('r_2026-09-07T18', true));
+    assert.ok(nextOpen, 'the close snapshot is stored as the next cycle self-heals');
+    assert.equal(nextOpen.forRoundId, 'r_2026-09-07T18');
+    assert.ok(nextOpen.holders.some((h) => h.wallet === NEWCOMER));
+
+    const second = await runRound({
+      cfg,
+      db,
+      ...fakesWithClose(closeHolders, '2026-09-07T17:58:00.000Z'),
+      scheduledAt: '2026-09-07T18:00:00.000Z',
+    });
+
+    assert.equal(second.status, 'DONE', second.error ?? '');
+    assert.equal(second.snapshotMode, 'full-cycle');
+    assert.equal(second.antiCheat.note, null);
+    assert.equal(second.antiCheat.stats.joinedThisCycle, 0);
+    assert.equal(walletsIn(second).has(NEWCOMER), true, 'held across the whole cycle this time');
+    assert.ok(paid(second, NEWCOMER).length > 0, 'and is paid in the round it actually held for');
+  } finally {
+    await close();
+  }
+});
+
+test('anti-cheat: a wallet that sold before the close is paid nothing', async () => {
+  const { db, close } = await makeDb('anticheat-sold');
+  try {
+    const cfg = makeCfg();
+    const seller = OPEN_HOLDERS[2].wallet;
+    await db.setKV(openSnapshotKeyFor('r_2026-09-07T12', true), openDoc('r_2026-09-07T12', OPEN_HOLDERS));
+
+    // It dumped everything: gone from the close snapshot entirely.
+    const closeHolders = OPEN_HOLDERS.filter((h) => h.wallet !== seller);
+    const round = await runRound({ cfg, db, ...fakesWithClose(closeHolders), scheduledAt: '2026-09-07T12:00:00.000Z' });
+
+    assert.equal(round.status, 'DONE', round.error ?? '');
+    assert.equal(round.snapshotMode, 'full-cycle');
+    assert.equal(walletsIn(round).has(seller), false);
+    assert.equal(paid(round, seller).length, 0);
+    assert.deepEqual(round.antiCheat.leftThisCycle.map((h) => h.wallet), [seller]);
+    assert.equal(round.antiCheat.stats.leftThisCycle, 1);
+    assert.equal(round.stats.eligibleHolders, 2);
+  } finally {
+    await close();
+  }
+});
+
+test('anti-cheat: a wallet that topped up is weighted on the smaller balance', async () => {
+  const { db, close } = await makeDb('anticheat-topup');
+  try {
+    const cfg = makeCfg();
+    const [a, b] = [HOLDERS[0].wallet, HOLDERS[2].wallet];
+    // Both open the cycle with 3,000,000 tokens.
+    const open = [
+      { wallet: a, balance: '3000000000000' },
+      { wallet: b, balance: '3000000000000' },
+    ];
+    // B quadruples just before the round.
+    const closeHolders = [
+      { wallet: a, balance: '3000000000000' },
+      { wallet: b, balance: '12000000000000' },
+    ];
+    await db.setKV(openSnapshotKeyFor('r_2026-09-07T12', true), openDoc('r_2026-09-07T12', open));
+
+    const round = await runRound({ cfg, db, ...fakesWithClose(closeHolders), scheduledAt: '2026-09-07T12:00:00.000Z' });
+
+    assert.equal(round.status, 'DONE', round.error ?? '');
+    const rows = new Map(round.snapshot.holders.map((h) => [h.wallet, h]));
+    assert.equal(rows.get(b).balance, '3000000000000', 'weighted on what it held all cycle');
+    assert.equal(rows.get(b).openBalance, '3000000000000');
+    assert.equal(rows.get(b).closeBalance, '12000000000000');
+    // `reduced` marks a wallet whose weight is below at least one end of the
+    // cycle — a top-up qualifies: it is paid on less than it now holds.
+    assert.equal(rows.get(b).reduced, true);
+    assert.equal(rows.get(a).reduced, undefined, 'a steady wallet is not marked at all');
+    assert.equal(rows.get(a).balance, '3000000000000');
+
+    // Equal weights: neither wallet's picks may outweigh the other's.
+    assert.equal(round.antiCheat.stats.reduced, 1, 'open and close differ for exactly one wallet');
+    const both = new Map(round.transfers.filter((t) => t.status === 'DONE').map((t) => [`${t.wallet} ${t.mint}`, t.amountRaw]));
+    for (const stock of round.universe.slice(0, cfg.defaultBasketSize)) {
+      assert.equal(both.get(`${a} ${stock.mint}`), both.get(`${b} ${stock.mint}`), `${stock.symbol} was not split evenly`);
+    }
+  } finally {
+    await close();
+  }
+});
+
+test('anti-cheat: a wallet that held steady is completely unaffected by the rule', async () => {
+  const steady = HOLDERS.slice(0, 3).map((h) => ({ ...h }));
+
+  const withRule = await makeDb('anticheat-steady-on');
+  const withoutRule = await makeDb('anticheat-steady-off');
+  try {
+    const cfg = makeCfg();
+    await withRule.db.setKV(openSnapshotKeyFor('r_2026-09-07T12', true), openDoc('r_2026-09-07T12', steady));
+
+    const enforced = await runRound({ cfg, db: withRule.db, ...fakesWithClose(steady), scheduledAt: '2026-09-07T12:00:00.000Z' });
+    const plain = await runRound({ cfg, db: withoutRule.db, ...fakesWithClose(steady), scheduledAt: '2026-09-07T12:00:00.000Z' });
+
+    assert.equal(enforced.snapshotMode, 'full-cycle');
+    assert.equal(plain.snapshotMode, 'close-only', 'no open snapshot exists in the second store');
+    assert.equal(enforced.antiCheat.stats.steady, 3);
+
+    // Same holders, same money, to the lamport and the base unit.
+    assert.deepEqual(
+      enforced.demand.map((d) => [d.symbol, d.weight, d.solLamports, d.shareBps]),
+      plain.demand.map((d) => [d.symbol, d.weight, d.solLamports, d.shareBps]),
+    );
+    assert.deepEqual(
+      enforced.transfers.map((t) => [t.wallet, t.symbol, t.amountRaw, t.status]).sort(),
+      plain.transfers.map((t) => [t.wallet, t.symbol, t.amountRaw, t.status]).sort(),
+    );
+    assert.equal(enforced.snapshot.hash, plain.snapshot.hash, 'the published snapshot is byte-identical');
+  } finally {
+    await withRule.close();
+    await withoutRule.close();
+  }
+});
+
+test('anti-cheat: eligibility is tested against the minimum, not the closing balance', async () => {
+  const { db, close } = await makeDb('anticheat-threshold');
+  try {
+    const cfg = makeCfg();
+    const climber = HOLDERS[3].wallet; // 500,000 tokens: below 0.1% of supply
+    const open = [
+      { wallet: HOLDERS[0].wallet, balance: '3000000000000' },
+      { wallet: climber, balance: '500000000000' },
+    ];
+    const closeHolders = [
+      { wallet: HOLDERS[0].wallet, balance: '3000000000000' },
+      { wallet: climber, balance: '6000000000000' }, // over the bar only at the close
+    ];
+    await db.setKV(openSnapshotKeyFor('r_2026-09-07T12', true), openDoc('r_2026-09-07T12', open));
+
+    const round = await runRound({ cfg, db, ...fakesWithClose(closeHolders), scheduledAt: '2026-09-07T12:00:00.000Z' });
+
+    assert.equal(round.status, 'DONE', round.error ?? '');
+    assert.equal(round.snapshot.eligibleThreshold, '1000000000000');
+    assert.equal(walletsIn(round).has(climber), false, 'the threshold must be cleared for the whole cycle');
+    assert.equal(paid(round, climber).length, 0);
+    assert.equal(round.stats.eligibleHolders, 1);
+  } finally {
+    await close();
+  }
+});
+
+test('anti-cheat: a missing open snapshot falls back to the previous close, and says so', async () => {
+  const { db, close } = await makeDb('anticheat-prevclose');
+  try {
+    const cfg = makeCfg();
+    // No open snapshot for this cycle, but the previous round's close exists —
+    // and it was taken at the start of this cycle, so it is a legitimate open.
+    const prev = openDoc('r_2026-09-07T06', OPEN_HOLDERS, '2026-09-07T05:57:00.000Z');
+    prev.kind = 'close';
+    await db.setKV(lastCloseKeyFor(true), prev);
+
+    const closeHolders = [...OPEN_HOLDERS, { wallet: NEWCOMER, balance: '9000000000000' }];
+    const round = await runRound({ cfg, db, ...fakesWithClose(closeHolders), scheduledAt: '2026-09-07T12:00:00.000Z' });
+
+    assert.equal(round.status, 'DONE', round.error ?? '');
+    assert.equal(round.snapshotMode, 'prev-close');
+    assert.equal(round.openSnapshot.mode, 'prev-close');
+    assert.equal(round.openSnapshot.takenAt, '2026-09-07T05:57:00.000Z');
+    assert.equal(round.openSnapshot.hash, prev.hash);
+    assert.equal(round.openSnapshot.holderCount, 3);
+    assert.match(round.antiCheat.note, /previous round's close snapshot was used as the open/);
+
+    // The rule is still enforced: the mid-cycle buyer is not paid.
+    assert.equal(paid(round, NEWCOMER).length, 0);
+    assert.equal(round.antiCheat.stats.joinedThisCycle, 1);
+  } finally {
+    await close();
+  }
+});
+
+test('anti-cheat: with no snapshot to open the cycle the round runs close-only and admits it', async () => {
+  const { db, close } = await makeDb('anticheat-closeonly');
+  try {
+    const cfg = makeCfg();
+    const closeHolders = [...OPEN_HOLDERS, { wallet: NEWCOMER, balance: '9000000000000' }];
+
+    const round = await runRound({ cfg, db, ...fakesWithClose(closeHolders), scheduledAt: '2026-09-07T12:00:00.000Z' });
+
+    assert.equal(round.status, 'DONE', round.error ?? '');
+    assert.equal(round.snapshotMode, 'close-only', 'the first round ever has nothing to compare against');
+    assert.equal(round.openSnapshot, null);
+    assert.equal(round.antiCheat.enabled, true);
+    assert.equal(round.antiCheat.stats, null);
+    assert.match(round.antiCheat.note, /full-cycle rule could not be enforced/);
+    assert.ok(round.closeSnapshot.hash, 'the close snapshot is still recorded in full');
+    assert.equal(round.closeSnapshot.holderCount, 4);
+
+    // Close-only is the old, gameable rule, so the newcomer IS paid here. That
+    // is precisely why it must be visible in the ledger rather than silent.
+    assert.ok(paid(round, NEWCOMER).length > 0);
+
+    // And it heals itself: the next cycle already has its open snapshot.
+    const nextOpen = await db.getKV(openSnapshotKeyFor('r_2026-09-07T18', true));
+    assert.equal(nextOpen.holderCount, 4);
+    const second = await runRound({
+      cfg,
+      db,
+      ...fakesWithClose(OPEN_HOLDERS, '2026-09-07T17:58:00.000Z'),
+      scheduledAt: '2026-09-07T18:00:00.000Z',
+    });
+    assert.equal(second.snapshotMode, 'full-cycle');
+    assert.equal(second.antiCheat.note, null, 'a full cycle between the two snapshots needs no caveat');
+  } finally {
+    await close();
+  }
+});
+
+test('anti-cheat: ANTICHEAT=0 keeps the old close-only rule and names it in the ledger', async () => {
+  const { db, close } = await makeDb('anticheat-off');
+  try {
+    const cfg = makeCfg({ ANTICHEAT: '0' });
+    assert.equal(cfg.antiCheat, false);
+    // Even with an open snapshot sitting right there, it is not consulted.
+    await db.setKV(openSnapshotKeyFor('r_2026-09-07T12', true), openDoc('r_2026-09-07T12', OPEN_HOLDERS));
+
+    const closeHolders = [...OPEN_HOLDERS, { wallet: NEWCOMER, balance: '9000000000000' }];
+    const round = await runRound({ cfg, db, ...fakesWithClose(closeHolders), scheduledAt: '2026-09-07T12:00:00.000Z' });
+
+    assert.equal(round.status, 'DONE', round.error ?? '');
+    assert.equal(round.snapshotMode, 'close-only');
+    assert.equal(round.antiCheat.enabled, false);
+    assert.match(round.antiCheat.note, /disabled by configuration/);
+    assert.equal(round.openSnapshot, null);
+    assert.ok(paid(round, NEWCOMER).length > 0, 'the old rule pays the mid-cycle buyer');
+  } finally {
+    await close();
+  }
+});
+
+test('anti-cheat: a DRY_RUN round never reads or writes the live snapshot keys', async () => {
+  const { db, close } = await makeDb('anticheat-modes');
+  try {
+    const cfg = makeCfg();
+    assert.equal(cfg.mode, 'DRY_RUN');
+
+    // Real cycle snapshots from a LIVE keeper. A rehearsal that consumed these
+    // would decide fictional payouts from real inputs; one that overwrote them
+    // would destroy the only record of what wallets held during a real cycle.
+    const liveOpen = openDoc('r_2026-09-07T12', [{ wallet: NEWCOMER, balance: '4000000000000' }]);
+    liveOpen.mode = 'LIVE';
+    const liveLastClose = openDoc('r_2026-09-07T06', [{ wallet: NEWCOMER, balance: '4000000000000' }]);
+    liveLastClose.mode = 'LIVE';
+    liveLastClose.kind = 'close';
+    await db.setKV(openSnapshotKeyFor('r_2026-09-07T12', false), liveOpen);
+    await db.setKV(lastCloseKeyFor(false), liveLastClose);
+    await db.setKV(openSnapshotKeyFor('r_2026-09-07T18', false), liveOpen);
+
+    const round = await runRound({ cfg, db, ...fakesWithClose(OPEN_HOLDERS), scheduledAt: '2026-09-07T12:00:00.000Z' });
+
+    assert.equal(round.status, 'DONE', round.error ?? '');
+    assert.equal(round.snapshotMode, 'close-only', 'the live open snapshot was not read');
+    assert.equal(walletsIn(round).has(NEWCOMER), false);
+
+    assert.deepEqual(await db.getKV(openSnapshotKeyFor('r_2026-09-07T12', false)), liveOpen);
+    assert.deepEqual(await db.getKV(openSnapshotKeyFor('r_2026-09-07T18', false)), liveOpen);
+    assert.deepEqual(await db.getKV(lastCloseKeyFor(false)), liveLastClose);
+
+    // The rehearsal keeps its own snapshots in its own keys.
+    const simNext = await db.getKV(openSnapshotKeyFor('r_2026-09-07T18', true));
+    assert.equal(simNext.mode, 'DRY_RUN');
+    assert.equal(simNext.holderCount, 3);
+    assert.equal((await db.getKV(lastCloseKeyFor(true))).roundId, round.id);
+
+    // And takeOpenSnapshot obeys the same split.
+    const taken = await takeOpenSnapshot({
+      cfg,
+      db,
+      holdersService: fakesWithClose(OPEN_HOLDERS).holdersService,
+      roundId: 'r_2026-09-08T00',
+    });
+    assert.equal(taken.taken, true);
+    assert.equal(taken.key, 'open-snapshot:sim:r_2026-09-08T00');
+    assert.equal(await db.getKV('open-snapshot:r_2026-09-08T00'), null);
+  } finally {
+    await close();
+  }
+});
+
+test('anti-cheat: value is conserved and the round is still reproducible under the rule', async () => {
+  const { db, close } = await makeDb('anticheat-conservation');
+  try {
+    const cfg = makeCfg();
+    const open = [
+      { wallet: HOLDERS[0].wallet, balance: '3000000000000' },
+      { wallet: HOLDERS[1].wallet, balance: '1000000000000' },
+      { wallet: HOLDERS[2].wallet, balance: '6000000000000' },
+    ];
+    const closeHolders = [
+      { wallet: HOLDERS[0].wallet, balance: '2000000000000' }, // sold a third
+      { wallet: HOLDERS[1].wallet, balance: '4000000000000' }, // topped up
+      { wallet: NEWCOMER, balance: '9000000000000' }, //          brand new
+    ];
+    await db.setKV(openSnapshotKeyFor('r_2026-09-07T12', true), openDoc('r_2026-09-07T12', open));
+
+    const round = await runRound({ cfg, db, ...fakesWithClose(closeHolders), scheduledAt: '2026-09-07T12:00:00.000Z' });
+
+    assert.equal(round.status, 'DONE', round.error ?? '');
+    assert.equal(round.snapshotMode, 'full-cycle');
+    const balances = new Map(round.snapshot.holders.map((h) => [h.wallet, h.balance]));
+    assert.equal(balances.get(HOLDERS[0].wallet), '2000000000000');
+    assert.equal(balances.get(HOLDERS[1].wallet), '1000000000000');
+    assert.equal(balances.has(HOLDERS[2].wallet), false, 'sold out entirely');
+    assert.equal(balances.has(NEWCOMER), false, 'bought mid-cycle');
+    assert.equal(round.antiCheat.stats.weight, '3000000000000');
+
+    // Nothing is created and nothing is lost.
+    const pool = BigInt(round.poolLamports);
+    assert.ok(sum(round.demand, (d) => d.solLamports) <= pool);
+    const carry = new Map((round.carryOut ?? []).map((c) => [c.mint, BigInt(c.amountRaw)]));
+    for (const swap of round.swaps) {
+      const handed = sum(round.transfers.filter((t) => t.mint === swap.mint), (t) => t.amountRaw);
+      assert.equal(handed + (carry.get(swap.mint) ?? 0n), BigInt(swap.receivedRaw), `conservation failed for ${swap.symbol}`);
+    }
+
+    // The published document still re-derives exactly, snapshot rule and all.
+    const plan = rebuildPlan(round, cfg);
+    const applied = applySwapResults(plan, round.swaps, round.carryIn ?? []);
+    assert.equal(applied.transfers.length, round.transfers.length);
+    for (const expected of applied.transfers) {
+      const actual = round.transfers.find((t) => t.wallet === expected.wallet && t.mint === expected.mint);
+      assert.equal(actual.amountRaw, expected.amountRaw);
+    }
+  } finally {
+    await close();
+  }
+});
+
+/* ------------------------------------------ scheduler: the open snapshot */
+
+test('scheduler: the open-snapshot offset is deterministic and always inside the cycle\'s first hour', () => {
+  const first = openOffsetFor('r_2026-09-07T12', 60, 6);
+  assert.deepEqual(openOffsetFor('r_2026-09-07T12', 60, 6), first, 'the same round id always gets the same offset');
+  assert.notDeepEqual(first, jitterFor('r_2026-09-07T12', 60), 'and it is not the round jitter in disguise');
+
+  const seen = new Set();
+  for (let day = 1; day <= 10; day++) {
+    for (let hour = 0; hour < 24; hour += 6) {
+      const id = `r_2026-09-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}`;
+      const offset = openOffsetFor(id, 60, 6);
+      assert.ok(offset.seconds >= 0 && offset.seconds < 3600, `${id} landed outside the first hour: ${offset.seconds}s`);
+      assert.equal(offset.ms, offset.seconds * 1000);
+      assert.equal(offset.windowMs, 3600_000);
+      seen.add(offset.seconds);
+
+      const plan = planOpenSnapshot({ intervalHours: 6, openSnapshotWindowMin: 60 }, new Date(`2026-09-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:00:00Z`));
+      assert.equal(plan.roundId, id);
+      assert.equal(plan.mark.getTime() - plan.cycleStart.getTime(), 6 * 3600_000);
+      assert.ok(plan.at >= plan.cycleStart, 'never before its own cycle');
+      assert.ok(plan.at.getTime() - plan.cycleStart.getTime() < 3600_000, 'always inside the first hour');
+      assert.ok(plan.at < plan.mark, 'and always before the close');
+    }
+  }
+  assert.ok(seen.size > 20, 'the moment actually moves between cycles');
+
+  // A short interval caps the window at a quarter of it, so the open snapshot
+  // can never spill out of the cycle it belongs to.
+  const shortCycle = openOffsetFor('r_2026-09-07T12', 60, 1);
+  assert.equal(shortCycle.windowMs, 900_000);
+  assert.ok(shortCycle.seconds < 900);
+  const shortPlan = planOpenSnapshot({ intervalHours: 1, openSnapshotWindowMin: 60 }, Date.parse('2026-09-07T12:00:00Z'));
+  assert.ok(shortPlan.at.getTime() - shortPlan.cycleStart.getTime() < 900_000);
+  assert.ok(shortPlan.at < shortPlan.mark);
+
+  assert.deepEqual(openOffsetFor('r_2026-09-07T12', 0, 6), { ms: 0, seconds: 0, minutes: 0, windowMs: 0 });
+});
+
+test('scheduler: arms the open snapshot for the coming cycle and stores it under that round id', async () => {
+  const { db, close } = await makeDb('anticheat-scheduler');
+  try {
+    const cfg = makeCfg();
+    const fakes = fakesWithClose(OPEN_HOLDERS);
+    // 12:00:30Z: the cycle that ends at 18:00 has just opened, so its open
+    // snapshot is still ahead of us.
+    let clock = Date.parse('2026-09-07T12:00:30Z');
+    const timers = [];
+
+    const keeper = start({
+      cfg,
+      db,
+      rpc: fakes.rpc,
+      holdersService: fakes.holdersService,
+      runRound: async () => null,
+      now: () => clock,
+      setTimer: (fn, ms, kind = 'round') => {
+        timers.push({ fn, ms, kind });
+        return timers.length;
+      },
+      clearTimer: () => {},
+    });
+    await keeper.ready();
+
+    const open = timers.filter((t) => t.kind === 'open');
+    assert.equal(open.length, 1, 'exactly one open-snapshot timer');
+    const status = keeper.status();
+    assert.equal(status.antiCheat, true);
+    assert.equal(status.openSnapshotWindowMin, 60);
+    assert.equal(status.nextOpenSnapshotRoundId, 'r_2026-09-07T18');
+    assert.equal(status.nextOpenSnapshotStatus, 'armed');
+    const expected = planOpenSnapshot(cfg, Date.parse('2026-09-07T18:00:00Z'));
+    assert.equal(status.nextOpenSnapshotAt, expected.at.toISOString());
+    assert.equal(open[0].ms, expected.at.getTime() - clock);
+
+    clock += open[0].ms;
+    await open[0].fn();
+
+    const stored = await db.getKV(openSnapshotKeyFor('r_2026-09-07T18', true));
+    assert.ok(stored, 'the open snapshot reached the store');
+    assert.equal(stored.roundId, 'r_2026-09-07T18');
+    assert.equal(stored.holderCount, 3);
+    assert.equal(stored.cycleStart, '2026-09-07T12:00:00.000Z');
+    assert.match(stored.hash, /^[0-9a-f]{64}$/);
+    assert.equal(keeper.status().openSnapshotsTaken, 1);
+    assert.equal(keeper.status().lastOpenSnapshotRoundId, 'r_2026-09-07T18');
+
+    // The FIRST reading in the window is the one the cycle is judged by: a
+    // second attempt must not replace it with a later, weaker open.
+    const again = await keeper.takeOpenSnapshotNow();
+    assert.equal(again.taken, false);
+    assert.equal(again.reason, 'already_taken');
+    assert.deepEqual(await db.getKV(openSnapshotKeyFor('r_2026-09-07T18', true)), stored);
+
+    keeper.stop();
+  } finally {
+    await close();
+  }
+});
+
+test('scheduler: a keeper that boots mid-cycle reports the missed window instead of faking an open', async () => {
+  const { db, close } = await makeDb('anticheat-missed');
+  try {
+    const cfg = makeCfg();
+    const fakes = fakesWithClose(OPEN_HOLDERS);
+    const timers = [];
+    const keeper = start({
+      cfg,
+      db,
+      rpc: fakes.rpc,
+      holdersService: fakes.holdersService,
+      runRound: async () => null,
+      // Deep inside the 06:00 -> 12:00 cycle: its first hour is long gone.
+      now: () => Date.parse('2026-09-07T11:30:00Z'),
+      setTimer: (fn, ms, kind = 'round') => {
+        timers.push({ fn, ms, kind });
+        return timers.length;
+      },
+      clearTimer: () => {},
+    });
+    await keeper.ready();
+
+    assert.equal(timers.filter((t) => t.kind === 'open').length, 0);
+    assert.equal(keeper.status().nextOpenSnapshotStatus, 'missed');
+    assert.equal(await db.getKV(openSnapshotKeyFor('r_2026-09-07T12', true)), null, 'nothing was invented');
+    keeper.stop();
+  } finally {
+    await close();
+  }
+});
+
+test('scheduler: no open-snapshot timer exists when anti-cheat is off, and none when there is no token', async () => {
+  const off = await makeDb('anticheat-off-timer');
+  const noToken = await makeDb('anticheat-no-token');
+  try {
+    const timers = [];
+    const keeperOff = start({
+      cfg: makeCfg({ ANTICHEAT: '0' }),
+      db: off.db,
+      runRound: async () => null,
+      now: () => Date.parse('2026-09-07T12:00:30Z'),
+      setTimer: (fn, ms, kind = 'round') => {
+        timers.push({ fn, ms, kind });
+        return timers.length;
+      },
+      clearTimer: () => {},
+    });
+    await keeperOff.ready();
+    assert.equal(timers.filter((t) => t.kind === 'open').length, 0);
+    assert.equal(keeperOff.status().antiCheat, false);
+    assert.equal(keeperOff.status().nextOpenSnapshotRoundId, null);
+    keeperOff.stop();
+
+    // Pre-launch there is no mint, so there is nothing to snapshot and the
+    // keeper says so instead of storing an empty holder set.
+    const cfg = makeCfg({ TOKEN_MINT: '' });
+    const result = await takeOpenSnapshot({
+      cfg,
+      db: noToken.db,
+      holdersService: {
+        async snapshot() {
+          throw new Error('a keeper with no token must never ask for holders');
+        },
+      },
+      roundId: 'r_2026-09-07T18',
+    });
+    assert.equal(result.taken, false);
+    assert.equal(result.reason, 'no_token');
+    assert.equal(await noToken.db.getKV('open-snapshot:sim:r_2026-09-07T18'), null);
+  } finally {
+    await off.close();
+    await noToken.close();
+  }
+});
+
+test('anti-cheat: a window shorter than a cycle is disclosed rather than passed off as a full one', async () => {
+  const { db, close } = await makeDb('anticheat-shortwindow');
+  try {
+    const cfg = makeCfg();
+    await db.setKV(openSnapshotKeyFor('r_2026-09-07T12', true), openDoc('r_2026-09-07T12', OPEN_HOLDERS));
+
+    const first = await runRound({ cfg, db, ...fakesWithClose(OPEN_HOLDERS), scheduledAt: '2026-09-07T12:00:00.000Z' });
+    assert.equal(first.snapshotMode, 'full-cycle');
+    assert.equal(first.antiCheat.note, null);
+
+    // An operator runs the same mark again four minutes later. Its only
+    // available open is the first run's close, so the rule covers four minutes,
+    // not six hours — and the ledger has to say exactly that.
+    const second = await runRound({
+      cfg,
+      db,
+      ...fakesWithClose(OPEN_HOLDERS, '2026-09-07T12:02:00.000Z'),
+      scheduledAt: '2026-09-07T12:00:00.000Z',
+    });
+
+    assert.equal(second.id, 'r_2026-09-07T12-2');
+    assert.equal(second.snapshotMode, 'prev-close');
+    assert.match(second.antiCheat.note, /only 4m apart/);
+    assert.match(second.antiCheat.note, /shorter window than a full 6h cycle/);
+  } finally {
+    await close();
+  }
+});
+
+test('anti-cheat: a real in-window open outranks the previous round\'s close, and is never replaced', async () => {
+  const { db, close } = await makeDb('anticheat-precedence');
+  try {
+    const cfg = makeCfg();
+    const nextKey = openSnapshotKeyFor('r_2026-09-07T18', true);
+
+    // A round lands and leaves its close behind as the next cycle's fallback open.
+    await runRound({ cfg, db, ...fakesWithClose(OPEN_HOLDERS), scheduledAt: '2026-09-07T12:00:00.000Z' });
+    const placeholder = await db.getKV(nextKey);
+    assert.equal(placeholder.kind, 'close');
+
+    // The scheduler then takes the real open inside the window. The unannounced
+    // reading is the stronger one, so it replaces the placeholder.
+    const later = [...OPEN_HOLDERS, { wallet: NEWCOMER, balance: '9000000000000' }];
+    const taken = await takeOpenSnapshot({
+      cfg,
+      db,
+      holdersService: fakesWithClose(later, '2026-09-07T12:37:00.000Z').holdersService,
+      roundId: 'r_2026-09-07T18',
+      cycleStart: '2026-09-07T12:00:00.000Z',
+    });
+    assert.equal(taken.taken, true);
+    const real = await db.getKV(nextKey);
+    assert.equal(real.kind, 'open');
+    assert.equal(real.takenAt, '2026-09-07T12:37:00.000Z');
+    assert.equal(real.holderCount, 4);
+
+    // Nothing replaces it after that — not a second attempt in the window...
+    const again = await takeOpenSnapshot({
+      cfg,
+      db,
+      holdersService: fakesWithClose(OPEN_HOLDERS, '2026-09-07T12:52:00.000Z').holdersService,
+      roundId: 'r_2026-09-07T18',
+    });
+    assert.equal(again.taken, false);
+    assert.equal(again.reason, 'already_taken');
+    assert.deepEqual(await db.getKV(nextKey), real);
+
+    // ...and not a second round on the earlier mark either.
+    await runRound({ cfg, db, ...fakesWithClose(OPEN_HOLDERS), scheduledAt: '2026-09-07T12:00:00.000Z' });
+    assert.deepEqual(await db.getKV(nextKey), real);
+
+    // The 18:00 round is then judged against that real open.
+    const round = await runRound({
+      cfg,
+      db,
+      ...fakesWithClose(later, '2026-09-07T17:58:00.000Z'),
+      scheduledAt: '2026-09-07T18:00:00.000Z',
+    });
+    assert.equal(round.snapshotMode, 'full-cycle');
+    assert.equal(round.openSnapshot.takenAt, '2026-09-07T12:37:00.000Z');
+    assert.equal(round.openSnapshot.hash, real.hash);
+    assert.ok(paid(round, NEWCOMER).length > 0, 'it held from the open reading to the close');
   } finally {
     await close();
   }

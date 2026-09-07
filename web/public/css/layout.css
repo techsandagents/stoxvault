@@ -1,5 +1,5 @@
 /* ==========================================================================
-   STOCKDROP — shell, grid, section scaffolding, responsive rules
+   STOXVAULT — shell, grid, section scaffolding, responsive rules
    Breakpoints: 375 (base / small phone) → 768 (tablet) → 1280 (full desk)
    Mobile-first: the base rules ARE the 375px layout.
    ========================================================================== */
@@ -86,6 +86,17 @@
 /* The status pill is hidden on the narrowest phones. The selector is scoped to
    .nav so it beats `.pill { display: inline-flex }` from components.css. */
 .nav .nav__status { display: none; }
+
+/* The contract-address button sits beside the connect button as its quieter
+   peer: the ticker in mono, an outline instead of the accent fill. */
+.nav__coin {
+  gap: 6px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.01em;
+  color: var(--ink-2);
+}
+.nav__coin:hover:not(:disabled) { color: var(--ink); }
+.nav__coin-ticker { font-size: var(--fs-xs); font-weight: var(--fw-semi); }
 
 /* ---- ticker tape -------------------------------------------------------- */
 .tape {
@@ -284,6 +295,12 @@
   .nav__tools .btn { height: 30px; }
   .nav__tools .btn--icon { width: 30px; }
   .nav__tools #btn-connect { padding-inline: var(--s-15); font-size: var(--fs-xs); }
+  /* Brand mark + ticker + two icons + connect have to share 375px, so the
+     wordmark stands down (the logo still carries the brand and the <a> keeps
+     its accessible name) and the ticker drops its copy glyph. */
+  .nav__wordmark { display: none; }
+  .nav__tools .nav__coin { padding-inline: var(--s-1); }
+  .nav__coin .btn__icon { display: none; }
 
   .section { padding-block: var(--s-5); }
   .section__head { margin-bottom: var(--s-2); }

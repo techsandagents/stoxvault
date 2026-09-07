@@ -1,5 +1,5 @@
 /**
- * STOCKDROP — the basket configurator.
+ * STOXVAULT — the basket configurator.
  *
  * The rules are the engine's, mirrored here so the page can answer instantly and
  * so the sentence the user reads is the same sentence whether the client or the
@@ -137,6 +137,44 @@ export function validateBasket(list, { rules, index = null, universeKnown = true
   return { ok: true, code: null, level: 'ok', text: `${list.length} stocks, 100% allocated.`, badMints, total };
 }
 
+/** The first boolean the server actually sent, or null if it sent none. */
+function firstBool(obj, keys) {
+  for (const key of keys) {
+    if (typeof obj?.[key] === 'boolean') return obj[key];
+  }
+  return null;
+}
+
+/** The first non-empty string the server actually sent, or null. */
+function firstText(obj, keys) {
+  for (const key of keys) {
+    const value = obj?.[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+/**
+ * What `/api/me.cycle` says, read defensively.
+ *
+ * The anti-cheat rule pays a wallet on the SMALLER of its two snapshot
+ * balances, so a wallet that bought mid-cycle earns nothing this round and its
+ * first drop is the round after. That is the most confusing state a real holder
+ * can be in, so the server's own `note` is preferred whenever it sends one, and
+ * a `me` document with no `cycle` object yields no verdict at all.
+ *
+ * @param {unknown} raw `me.cycle`
+ * @returns {{known: boolean, held: boolean|null, note: string|null, showNote: boolean}}
+ */
+export function readCycle(raw) {
+  const cycle = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+  if (!cycle) return { known: false, held: null, note: null, showNote: false };
+
+  const held = firstBool(cycle, ['heldFullCycle', 'heldWholeCycle', 'heldFull', 'fullCycle', 'held']);
+  const note = firstText(cycle, ['note', 'message', 'detail', 'text']);
+  return { known: held !== null, held, note, showNote: Boolean(note) || held === false };
+}
+
 export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock } = {}) {
   const picksState = document.getElementById('basket-picks');
   const picksList = document.getElementById('basket-picks-list');
@@ -174,6 +212,11 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
   const projShare = document.getElementById('proj-share');
   const projPool = document.getElementById('proj-pool');
   const projNote = document.getElementById('proj-note');
+  const projCycleRow = document.getElementById('proj-cycle-row');
+  const projCycle = document.getElementById('proj-cycle');
+  const projCycleNote = document.getElementById('proj-cycle-note');
+  const projCycleNoteTitle = document.getElementById('proj-cycle-note-title');
+  const projCycleNoteText = document.getElementById('proj-cycle-note-text');
   const projSim = document.getElementById('projection-sim');
   const projConnectBtn = document.getElementById('btn-projection-connect');
 
@@ -200,7 +243,14 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
   let index = new Map(); // mint -> stock
   let working = []; // [{mint, pct}] — what the UI shows
   let savedPicks = null; // the wallet's stored basket, or null (default)
-  let defaultBasket = []; // top-5 x 20
+  // The editor's starting point. It is a VALID basket under the user rules
+  // (2-5 stocks, 10-60% each), which the real default deliberately need not be:
+  // an operator default of "100% SPCXx" is one stock at 100%, so preloading it
+  // would drop the editor into a permanently unsaveable state. So this is a
+  // starting suggestion, and `serverDefault` below is what you actually receive
+  // if you save nothing. The labelling must not confuse the two.
+  let defaultBasket = [];
+  let serverDefault = null; // {picks:[{symbol,pct}]} from /api/config.defaultBasket
   let connected = false;
   let me = null;
   let mode = 'DRY_RUN';
@@ -259,6 +309,21 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
     const base = clamp(Math.floor(100 / n / STEP) * STEP, rules.minPct, rules.maxPct);
     const picks = mints.map((mint) => ({ mint, pct: base }));
     return autoBalance(picks);
+  }
+
+  /**
+   * What a holder who saves nothing actually receives, in words, as the server
+   * resolved it. Falls back to a generic phrase rather than naming a basket the
+   * server never confirmed.
+   */
+  function serverDefaultText() {
+    const picks = Array.isArray(serverDefault?.picks) ? serverDefault.picks.filter((p) => p && p.symbol) : [];
+    if (picks.length === 0) return 'the default basket';
+    if (picks.length === 1) return `100% ${picks[0].symbol}`;
+    if (picks.every((p) => p.pct === picks[0].pct)) {
+      return `${picks.map((p) => p.symbol).join(', ')} at ${picks[0].pct}% each`;
+    }
+    return picks.map((p) => `${p.symbol} ${p.pct}%`).join(', ');
   }
 
   function setWorking(next, { rebuild = true } = {}) {
@@ -523,7 +588,7 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
         ? 'Showing unsaved edits'
         : savedPicks !== null
           ? 'Showing your saved basket'
-          : 'Showing the default basket';
+          : `Showing a starting suggestion — save nothing and you receive ${serverDefaultText()}`;
     }
 
     if (saveBtn && !saving) {
@@ -550,12 +615,47 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
 
   /* ------------------------------------------------------------ projection */
 
+  function hideCycle() {
+    if (projCycleRow) projCycleRow.hidden = true;
+    if (projCycleNote) projCycleNote.hidden = true;
+  }
+
+  /**
+   * The `cycle` object from `/api/me`, painted into the projection panel: did
+   * this wallet hold across the whole six-hour cycle, and — the part a real
+   * holder trips over — the "you bought this cycle, so your first drop is the
+   * round after" case. The reading itself is `readCycle`, above.
+   */
+  function renderCycle(raw) {
+    const { known, held, note, showNote } = readCycle(raw);
+
+    if (projCycleRow) projCycleRow.hidden = !known;
+    if (projCycle && held !== null) {
+      projCycle.textContent = held
+        ? 'Yes — counted at the smaller of the two snapshots'
+        : 'No — not for the cycle running now';
+    }
+
+    if (projCycleNote) projCycleNote.hidden = !showNote;
+    if (!showNote) return;
+
+    if (projCycleNoteTitle) {
+      projCycleNoteTitle.textContent = held === false ? 'Your first drop is the next round' : 'How this cycle is counted';
+    }
+    if (projCycleNoteText) {
+      projCycleNoteText.textContent =
+        note ||
+        'A wallet is weighted by the smaller of its two snapshot balances, so a balance that was not held for the whole cycle earns nothing from this round. Hold it through the next drop and it counts from then on.';
+    }
+  }
+
   function renderProjection() {
     if (!projection) return;
 
     if (!connected || !me) {
       projection.dataset.state = 'empty';
       if (projSim) projSim.hidden = true;
+      hideCycle();
       return;
     }
 
@@ -587,6 +687,8 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
 
     if (projPool) projPool.textContent = poolSol === null ? DASH : `${fmtSol(poolSol, 3)} SOL`;
 
+    renderCycle(me.cycle);
+
     if (projNote) {
       const parts = [];
       if (me.projected?.note) parts.push(me.projected.note);
@@ -616,7 +718,7 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
       .map((p) => `${index.get(p.mint)?.symbol || p.mint} ${p.pct}%`)
       .join(', ');
     return [
-      'STOCKDROP',
+      'STOXVAULT',
       'Set my basket.',
       'This is not a transaction. Nothing leaves your wallet.',
       `Wallet: ${walletAddress}`,
@@ -840,6 +942,7 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
         };
       }
       if (config?.mode) mode = config.mode;
+      if (config?.defaultBasket) serverDefault = config.defaultBasket;
 
       const set = (id, text) => {
         const el = document.getElementById(id);

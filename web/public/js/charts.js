@@ -1,5 +1,5 @@
 /**
- * STOCKDROP — charts.
+ * STOXVAULT — charts.
  *
  * Everything except the candle chart is hand-drawn inline SVG: a donut for the
  * basket split, a sparkline for the 7-day column, and the demand bars are plain

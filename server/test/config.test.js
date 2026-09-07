@@ -149,6 +149,9 @@ test('rules object matches the contract', () => {
     // null means "no explicit basket configured": holders who never picked get
     // the top `defaultBasketSize` split evenly.
     defaultBasket: null,
+    // The full-cycle rule: two snapshots per round, weight = min(open, close).
+    antiCheat: true,
+    openSnapshotWindowMin: 60,
   });
   assert.equal(Object.isFrozen(cfg.rules), true);
 });

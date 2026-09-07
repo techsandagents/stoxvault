@@ -1,12 +1,15 @@
-# STOCKDROP
+# STOXVAULT
 
-A Solana memecoin whose creator fees buy **real tokenised stocks** and send them straight to
+$STOXVAULT — a Solana memecoin whose creator fees buy **real tokenised stocks** and send them straight to
 holders' wallets — weighted by the stocks each holder picked.
 
 Every 6 hours:
 
 1. The **vault** wallet's SOL balance becomes the round's pool.
-2. Holders are snapshotted. Anyone holding at least **0.1% of supply** is eligible.
+2. Holders are snapshotted **twice**: once in the first hour of the cycle and once at the drop.
+   A wallet is weighted by the **smaller** of the two balances, so it must hold across the whole
+   cycle to be paid for it. Buy mid-cycle and your first drop is the next round. Sell before the
+   drop and you get nothing. Anyone holding at least **0.1% of supply** across the cycle is eligible.
 3. Each holder's share of the pool is spent on **their own picks** — 2 to 5 stocks from the
    **top 20 xStocks by company market cap**, each between 10% and 60%, summing to 100%.
 4. Holders who never picked get the **default basket**, set by `DEFAULT_BASKET`. It is currently
@@ -20,8 +23,13 @@ Every 6 hours:
 
 **Vault address:** `769fv6KK6SAQ5FBAXdUZLdrppdHn5CqqgJBpFCLyf9up`
 
-Send SOL there to fund a round. That address is the only place funds sit, and it is shown on
-the site.
+Send SOL there to fund a round. It is the only place funds sit.
+
+The address is **not published on the site** (operator's decision, 2026-09-07). The site shows the
+vault's balance but not where it lives. Worth knowing what that costs: a holder can still read the
+per-round ledger, but cannot independently verify against the chain that the balance and the swaps
+came from the wallet we claim. Publishing the address is the cheapest way to make the ledger
+checkable by a stranger, so revisit this if trust ever becomes the constraint.
 
 ---
 

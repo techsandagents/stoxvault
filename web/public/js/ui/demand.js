@@ -1,5 +1,5 @@
 /**
- * STOCKDROP — community demand.
+ * STOXVAULT — community demand.
  *
  * Everybody's saved baskets added together: the split the next round would buy.
  * Bars are drawn to the *largest* share so the chart uses the full width, but

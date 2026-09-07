@@ -72,6 +72,8 @@ Ownership during the parallel build (do not edit files you don't own; add new fi
 | EXCLUDED_WALLETS | "" | comma list. Vault address is ALWAYS excluded in addition. |
 | ROUND_INTERVAL_HOURS | 6 | rounds at 00/06/12/18 UTC |
 | ROUND_JITTER_MIN | 10 | snapshot taken at a random offset within ±jitter of the mark (jitter seeded per round, recorded) |
+| ANTICHEAT | 1 | `cfg.antiCheat`. `1` = a wallet is weighted on **min(open, close)** across the whole cycle (§7). `0` = the old, gameable close-snapshot-only rule, and every round says so (`snapshotMode: 'close-only'`). |
+| OPEN_SNAPSHOT_WINDOW_MIN | 60 | `cfg.openSnapshotWindowMin`. Length, in minutes, of the window at the **start** of a cycle inside which that cycle's OPEN snapshot is taken. Capped at `intervalHours/4` by the scheduler so it can never leave its own cycle. |
 | MIN_ROUND_POOL_SOL | 0.5 | below this the round is SKIPPED (`low_pool`) and SOL carries over |
 | FEE_RESERVE_SOL | 0.05 | flat floor always left in the vault. It is NOT the rent budget: each round additionally reserves its own measured ATA rent + per-tx fees (§7, `Round.rentEstimate`) before splitting the pool. |
 | UNIVERSE_SIZE | 20 | |
@@ -85,7 +87,7 @@ Ownership during the parallel build (do not edit files you don't own; add new fi
 | JUP_BASE | https://lite-api.jup.ag | |
 
 `CFG.mode` = `'LIVE' | 'DRY_RUN' | 'READ_ONLY'` (read-only when no vault secret).
-`CFG.rules` = `{ minPicks: 2, maxPicks: 5, minPct: 10, maxPct: 60, eligibleBps, intervalHours, universeSize, defaultBasketSize }`.
+`CFG.rules` = `{ minPicks: 2, maxPicks: 5, minPct: 10, maxPct: 60, eligibleBps, intervalHours, universeSize, defaultBasketSize, antiCheat, openSnapshotWindowMin }`.
 
 ---
 
@@ -102,8 +104,19 @@ Universe { updatedAt, source, stocks: Stock[20], all: Stock[] (every liquid xSto
 Pick { mint, symbol, pct }             // pct integer 10..60
 Prefs { wallet, picks: Pick[], signature, message, updatedAt }   // stored as signed by the user
 
-Holder { wallet, balance: string (base units, bigint as string) }
+Holder { wallet, balance: string (base units, bigint as string),
+         openBalance?, closeBalance?: string, reduced?: true }   // the last three only under the full-cycle rule (§7)
 Snapshot { takenAt, slot, tokenMint, supply, eligibleThreshold, holders: Holder[] (eligible only), excluded: string[], hash (sha256 of canonical JSON) }
+
+CycleSnapshot {                        // one end of a cycle, stored in kv, not on the round
+  kind: 'open'|'close', roundId, forRoundId?, mode: 'LIVE'|'DRY_RUN',
+  takenAt, slot, tokenMint, supply,
+  holders: Holder[],                   // RAW, not filtered by the eligibility threshold:
+                                       // the threshold is applied to min(open, close), so a
+                                       // pre-filtered end would hide the balance that minimum needs
+  holderCount, source, cycleStart, scheduledFor, hash
+}
+SnapshotRef { takenAt, slot, hash, holderCount, source, roundId, key, mode, opensRoundId? }  // as recorded on a Round
 
 Round {
   id (e.g. r_2026-09-07T12), scheduledAt, startedAt, finishedAt, jitterMin: number|null,
@@ -125,7 +138,26 @@ Round {
     grossPoolLamports, netPoolLamports: string
   } | null,
   universe: Stock[20] (as used), top5: string[] (mints),
-  snapshot: Snapshot | null,
+  snapshot: Snapshot | null,            // the EFFECTIVE holder set the round paid: balances are
+                                        //   min(open, close) when the full-cycle rule applied
+  snapshotMode: 'full-cycle'|'prev-close'|'close-only'|null,
+  openSnapshot: SnapshotRef | null,     // which snapshot opened this cycle (null under close-only)
+  closeSnapshot: SnapshotRef | null,    // the snapshot taken at the round itself
+  antiCheat: {                          // null until SNAPSHOT
+    enabled: boolean,                   //   cfg.antiCheat
+    mode: same as snapshotMode,
+    rule: 'weight = min(openBalance, closeBalance)',
+    windowMin: number,
+    note: string|null,                  //   why the rule was weakened, when it was. NEVER silent.
+    stats: {                            //   null under close-only (there is nothing to combine)
+      wallets, openHolders, closeHolders, held, joinedThisCycle, leftThisCycle,
+      reduced, steady, zeroWeight,      //   counts, including the wallets that carry no weight
+      openWeight, closeWeight, weight: string   //   bigint sums; weight ≤ min(openWeight, closeWeight)
+    } | null,
+    joinedThisCycle: [{ wallet, closeBalance }],            // bought mid-cycle: paid NEXT round
+    leftThisCycle:   [{ wallet, openBalance }],             // sold before the close: paid nothing
+    reduced:         [{ wallet, openBalance, closeBalance }]// weighted below one end of the cycle
+  } | null,
   demand: [{ mint, symbol, weight: string /*bigint*/, shareBps: number, solLamports: string }],
   swaps:  [{ mint, symbol, solLamports, quotedOut, receivedRaw, beforeRaw, tx: string|null,
              status: 'PENDING'|'SENDING'|'DONE'|'FAILED'|'SKIPPED'|'UNRESOLVED', error }],
@@ -237,7 +269,14 @@ Errors: JSON `{ error: '<code>', detail?: string }` with proper status codes. Ne
 rankUniverse(all: Stock[], { liqMinUsd, size }) -> Stock[size]   // filter liquidity ≥ min, sort by underlyingMcap desc (fallback tokenMcap), assign rank, isTop5 = rank ≤ 5
 validatePicks(picks, universe, rules) -> Pick[] (normalized, sorted by pct desc) | throws PickError{code}
 defaultPicks(universe, rules) -> Pick[]                           // top5 × 20
+combineSnapshots(openHolders, closeHolders) -> { holders, stats }
+   // the full-cycle rule, pure. balance = min(open, close) as BigInt, a wallet absent from a
+   // snapshot counting as 0. Every wallet seen in EITHER snapshot comes back, flagged
+   // joinedThisCycle (open 0, close > 0) or reduced (both > 0 and different); the ones whose
+   // minimum is 0 carry no weight but are counted in `stats`. Accepts holder arrays or Snapshots.
 computeEligible(holders, { supplyRaw, eligibleBps, excluded }) -> Holder[]   // balance ≥ floor(supplyRaw*bps/10000), not excluded
+   // openBalance / closeBalance / reduced pass through untouched when the input carries them, so
+   // eligibility is decided by whatever balance the caller supplied — the cycle minimum, under §7.
 computeDemand(eligible, prefsByWallet, universe, rules) -> { perStock: Map<mint, {weight: bigint, contributors: [{wallet, weight: bigint}]}>, totalWeight: bigint }
    // weight_hs = balance_h × pct_hs   (bigint). Picks not in the current universe are re-spread across the holder's remaining valid picks pro-rata; if none remain, the holder falls back to default picks.
 splitPool(poolLamports: bigint, perStock) -> Map<mint, bigint>     // floor(pool × weight / totalWeight); remainder (≤ nStocks lamports) stays in vault
@@ -252,6 +291,58 @@ Round math must be **exactly reproducible** from the stored round document by an
 ## 7. Keeper (`src/keeper/*`)
 
 Scheduler: compute next mark (00/06/12/18 UTC), add jitter in [−J, +J] minutes (deterministic from round id via sha256, recorded in the round as `jitterMin`), sleep, run. On boot: if `unfinishedRound()` exists, RESUME it before scheduling.
+
+**The full-cycle rule (anti-cheat).** One snapshot at round time pays a wallet that bought minutes
+before it and sold minutes after: that wallet contributed nothing to the cycle and diluted everyone
+who held. So a cycle has TWO snapshots and a wallet's weight for the round is
+**`min(openBalance, closeBalance)`** in BigInt.
+
+- The round at mark **T** with interval **I** owns the cycle **(T−I, T]**.
+- **OPEN** is taken inside the cycle's FIRST hour, at `T − I + openOffsetFor(roundId)`. The offset is
+  `sha256('open:' + roundId)`'s first 6 bytes modulo the window, so it is reproducible and auditable
+  but not guessable in advance — the same construction as the round jitter, in its own hash domain.
+  The window is `OPEN_SNAPSHOT_WINDOW_MIN` minutes, capped at `I/4`, so it can never land outside its
+  own cycle or after the close. `scheduler.planOpenSnapshot(cfg, mark)` returns the whole plan.
+- **CLOSE** is the round's own snapshot, already within ±`ROUND_JITTER_MIN` of the mark.
+- The **first** reading taken inside the open window is the one the cycle is judged by; a later one
+  would be a weaker open, so `takeOpenSnapshot` never overwrites an existing one.
+
+What the rule does, by construction: bought mid-cycle → open 0 → weight 0 → no drop, and the wallet
+is in the NEXT cycle's open snapshot, so it is paid then. Sold before the close → close 0 → no drop.
+Topped up → weighted on what it held all cycle, not the peak. Held steady → unaffected, to the base
+unit. Eligibility (≥ `ELIGIBLE_BPS`) is tested against that same minimum, so the threshold has to be
+cleared for the whole cycle, not at one instant.
+
+**Snapshot keys** (kv, split by mode exactly like the carry-over dust):
+
+| key | written by | holds |
+|---|---|---|
+| `open-snapshot:<roundId>` | the scheduler at the open moment; also the previous round, which writes its close here for the next cycle | that cycle's `CycleSnapshot` |
+| `open-snapshot:sim:<roundId>` | the same, in DRY_RUN | |
+| `close-snapshot:last` | every round at SNAPSHOT | the newest close `CycleSnapshot`, the fallback open |
+| `close-snapshot:sim:last` | the same, in DRY_RUN | |
+
+A DRY_RUN round never reads or writes the LIVE keys and a LIVE round never reads the sim ones. A
+rehearsal that consumed the live open snapshot would decide real-looking payouts from it, and one
+that overwrote it would destroy the only record of what wallets held during a real cycle.
+
+**Fallback chain** when this cycle has no open snapshot (first round ever, or the keeper was down for
+that window), in order — the outcome is always recorded in `Round.snapshotMode`:
+1. `open-snapshot[:sim]:<this round id>` → `snapshotMode: 'full-cycle'`.
+2. otherwise `close-snapshot[:sim]:last`, provided it is not this round's own close: it was taken at
+   the start of this cycle, so it is a legitimate open → `snapshotMode: 'prev-close'`, with a note
+   naming when it was taken (and a second note if the two snapshots span more than 1.5 cycles).
+3. otherwise the close snapshot alone → `snapshotMode: 'close-only'` and a note on the round saying
+   the full-cycle rule could not be enforced for it. `close-only` is exactly the window the rule
+   exists to close, so it is never silent: it is on the round document and in the API.
+
+In every case the close snapshot is also written as the NEXT cycle's open (`kind: 'close'`), so the
+system is back on the full rule after one round. That write is only a placeholder and loses to a real
+one: `takeOpenSnapshot` replaces a stored `close` with a reading taken inside the window (the
+unannounced one is the stronger open) and never replaces a stored `open`, and a round refuses to
+overwrite an `open` that is already there — a late round and an early open window can overlap. `ANTICHEAT=0` skips all of it: no open snapshot is scheduled or read,
+`snapshotMode` is `'close-only'` and `antiCheat.enabled` is false with a note saying it was turned off
+by configuration.
 
 The next mark is chosen **strictly after the last mark this keeper handled**, not from the clock
 alone (`planNext(cfg, now, afterMark)`; the keeper seeds `afterMark` on boot from
@@ -269,7 +360,11 @@ is never completed with real sends, and a live round is never completed with sim
 Runner state machine (each step persists before proceeding, so a crash resumes idempotently):
 ```
 PENDING     → read vault SOL; pool = balance − reserve. if TOKEN_MINT blank → SKIPPED(no_token). if pool < MIN → SKIPPED(low_pool)
-SNAPSHOT    → holders (services/holders) → computeEligible → if none → SKIPPED(no_holders). refresh universe. freeze prefs (allPrefs).
+SNAPSHOT    → take the CLOSE snapshot (services/holders) → load this cycle's OPEN snapshot (fallback
+              chain above) → combineSnapshots → computeEligible over min(open, close)
+              → record openSnapshot / closeSnapshot / snapshotMode / antiCheat on the round, and
+                store the close as the next cycle's open + `close-snapshot[:sim]:last`
+              → if no eligible holder → SKIPPED(no_holders). refresh universe. freeze prefs (allPrefs).
               plan once to learn the round's shape → rentEstimate (recipient accounts × rent + per-tx fees)
               → pool = pool − rentEstimate.totalLamports; if that is under MIN → SKIPPED(rent_unfunded)
               → re-split the reduced pool. persist demand + rentEstimate.

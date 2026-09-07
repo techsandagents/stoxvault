@@ -36,6 +36,7 @@ import { VersionedTransaction } from '@solana/web3.js';
 import {
   applySwapResults,
   buildRoundPlan,
+  combineSnapshots,
   computeEligible,
   rankUniverse,
   snapshotHash,
@@ -131,6 +132,172 @@ export function storedRoundMode(round) {
  * vault invisible forever.
  */
 export const carryKeyFor = (simulated) => (simulated ? 'carry:sim' : 'carry');
+
+/* ------------------------------------------------------------- anti-cheat */
+
+/**
+ * The cycle snapshots live in the kv store, and — exactly like the carry-over
+ * dust — they are split by mode. A rehearsal that consumed the live open
+ * snapshot would decide real payouts from fictional inputs, and one that
+ * overwrote it would destroy the only evidence of what wallets held at the
+ * start of a real cycle.
+ */
+export const openSnapshotKeyFor = (roundId, simulated) => `open-snapshot:${simulated ? 'sim:' : ''}${roundId}`;
+
+/** The last close snapshot taken in this mode — the fallback open for the next cycle. */
+export const lastCloseKeyFor = (simulated) => `close-snapshot:${simulated ? 'sim:' : ''}last`;
+
+/** Anti-cheat is on unless the config explicitly turns it off. */
+export const antiCheatEnabled = (cfg) => cfg?.antiCheat !== false;
+
+/** Minutes after the cycle opens inside which the open snapshot may be taken. */
+export function openWindowMinFor(cfg) {
+  const configured = Number(cfg?.openSnapshotWindowMin);
+  return Number.isFinite(configured) && configured > 0 ? configured : 60;
+}
+
+/** Milliseconds in one round cycle. */
+export function intervalMsFor(cfg) {
+  const hours = Number(cfg?.intervalHours);
+  return (Number.isFinite(hours) && hours > 0 ? hours : 6) * 3600_000;
+}
+
+/**
+ * Snapshot metadata as it is recorded on a round document: what was taken,
+ * when, at which slot, and the hash that lets anyone re-derive it. The holder
+ * list itself stays in the kv store — the round already publishes the holder
+ * set it actually paid.
+ */
+function snapshotRef(doc, extra = {}) {
+  if (!doc) return null;
+  const holders = Array.isArray(doc.holders) ? doc.holders : [];
+  return {
+    takenAt: doc.takenAt ?? null,
+    slot: Number.isFinite(doc.slot) ? doc.slot : null,
+    hash: doc.hash ?? null,
+    holderCount: Number.isFinite(doc.holderCount) ? doc.holderCount : holders.length,
+    source: doc.source ?? null,
+    roundId: doc.roundId ?? null,
+    ...extra,
+  };
+}
+
+/** A stored snapshot document is only usable if it actually carries holders. */
+function usableSnapshot(doc) {
+  return Boolean(doc && typeof doc === 'object' && Array.isArray(doc.holders));
+}
+
+/**
+ * takeOpenSnapshot(deps) — the FIRST of the two snapshots in a cycle.
+ *
+ * The scheduler calls this once per cycle, at an unpredictable moment inside
+ * the cycle's first hour (see scheduler.openOffsetFor). It records the RAW
+ * holder set — not the eligible subset — because the round's eligibility test
+ * runs against min(open, close) and a pre-filtered open would hide the balance
+ * that minimum needs.
+ *
+ * It never overwrites an open snapshot that already exists for the cycle: the
+ * first reading inside the window is the one the cycle is judged by, and a
+ * later one would be a weaker (more gameable) open.
+ *
+ * @returns {Promise<{taken: boolean, reason: string|null, key: string, snapshot: object|null}>}
+ */
+export async function takeOpenSnapshot(deps = {}) {
+  const { cfg, db, roundId } = deps;
+  if (!cfg) throw new RunnerError('takeOpenSnapshot: cfg is required', 'bad_argument');
+  if (!db) throw new RunnerError('takeOpenSnapshot: db is required', 'bad_argument');
+  if (!roundId) throw new RunnerError('takeOpenSnapshot: roundId is required', 'bad_argument');
+
+  const logger = deps.logger || noopLogger;
+  const now = deps.now || (() => Date.now());
+  const simulated = cfg.mode !== 'LIVE';
+  const key = openSnapshotKeyFor(roundId, simulated);
+
+  if (!antiCheatEnabled(cfg)) return { taken: false, reason: 'anti_cheat_disabled', key, snapshot: null };
+  if (!cfg.tokenMint) {
+    logger.info?.(`open snapshot for ${roundId}: no token yet, nothing to snapshot`);
+    return { taken: false, reason: 'no_token', key, snapshot: null };
+  }
+
+  const existing = await db.getKV(key);
+  if (usableSnapshot(existing) && deps.force !== true) {
+    // A real in-window open is never replaced. A `close` document under this key
+    // is only the previous round's fallback placeholder, and a reading actually
+    // taken inside the window — at an unannounced moment — is stronger, so that
+    // one is upgraded.
+    if (existing.kind !== 'close') return { taken: false, reason: 'already_taken', key, snapshot: existing };
+    logger.info?.(`open snapshot for ${roundId}: replacing the previous round's close (${existing.roundId ?? 'unknown'}) with a reading taken inside the window`);
+  }
+
+  const snap = await callHoldersService(deps.holdersService, { cfg, logger });
+
+  let supplyRaw = snap.supplyRaw;
+  if (!supplyRaw && deps.rpc && typeof deps.rpc.getTokenSupply === 'function') {
+    try {
+      supplyRaw = (await deps.rpc.getTokenSupply(cfg.tokenMint)).amountRaw.toString();
+    } catch (err) {
+      logger.warn?.(`open snapshot for ${roundId}: could not read token supply (${err.message})`);
+      supplyRaw = null;
+    }
+  }
+
+  const doc = {
+    kind: 'open',
+    roundId,
+    mode: cfg.mode,
+    takenAt: snap.takenAt || new Date(now()).toISOString(),
+    slot: snap.slot,
+    tokenMint: cfg.tokenMint,
+    supply: String(supplyRaw ?? cfg.supplyRaw ?? '0'),
+    holders: snap.holders,
+    holderCount: snap.holders.length,
+    source: snap.source,
+    cycleStart: deps.cycleStart ? new Date(deps.cycleStart).toISOString() : null,
+    scheduledFor: deps.scheduledFor ? new Date(deps.scheduledFor).toISOString() : null,
+  };
+  doc.hash = snapshotHash(doc);
+
+  await db.setKV(key, doc);
+  logger.info?.(`open snapshot for ${roundId}: ${doc.holderCount} wallets at ${doc.takenAt} (${key})`);
+  return { taken: true, reason: null, key, snapshot: doc };
+}
+
+/**
+ * The open snapshot this round's cycle is judged against, with the fallback
+ * chain of CONTRACT.md section 7:
+ *
+ *   a. this cycle's own open snapshot                     -> 'full-cycle'
+ *   b. the previous round's close snapshot, which was taken at the start of
+ *      this cycle and is therefore a legitimate open      -> 'prev-close'
+ *   c. nothing usable: the caller runs on the close alone -> 'close-only'
+ *
+ * @returns {Promise<{mode: 'full-cycle'|'prev-close', snapshot: object, key: string}|null>}
+ */
+export async function loadCycleOpenSnapshot({ db, cfg, roundId, simulated, logger = noopLogger }) {
+  const key = openSnapshotKeyFor(roundId, simulated);
+  let doc = null;
+  try {
+    doc = await db.getKV(key);
+  } catch (err) {
+    logger.warn?.(`round ${roundId}: could not read ${key} (${err.message})`);
+    doc = null;
+  }
+  if (usableSnapshot(doc)) return { mode: 'full-cycle', snapshot: doc, key };
+
+  const fallbackKey = lastCloseKeyFor(simulated);
+  let prev = null;
+  try {
+    prev = await db.getKV(fallbackKey);
+  } catch (err) {
+    logger.warn?.(`round ${roundId}: could not read ${fallbackKey} (${err.message})`);
+    prev = null;
+  }
+  // A round must never use its own close as its own open (a --retry would).
+  if (usableSnapshot(prev) && prev.roundId !== roundId) {
+    return { mode: 'prev-close', snapshot: prev, key: fallbackKey };
+  }
+  return null;
+}
 
 /* ------------------------------------------------------------------- costs */
 
@@ -434,6 +601,10 @@ export async function runRound(deps = {}) {
       universeSource: null,
       top5: [],
       snapshot: null,
+      snapshotMode: null,
+      openSnapshot: null,
+      closeSnapshot: null,
+      antiCheat: null,
       plan: null,
       demand: [],
       swaps: [],
@@ -559,14 +730,75 @@ export async function runRound(deps = {}) {
         }
       }
 
-      const eligible = computeEligible(snap.holders, {
+      /* -------------------------------------------- the cycle's two snapshots
+       *
+       * CLOSE is this reading, taken within ten minutes of the mark. OPEN was
+       * taken by the scheduler inside the cycle's first hour. A wallet's weight
+       * is min(open, close), so buying just before the drop and selling just
+       * after it earns nothing: the wallet was not there at the open.
+       */
+      const closeSnapshot = {
+        kind: 'close',
+        roundId: round.id,
+        mode: cfg.mode,
+        takenAt: snap.takenAt || new Date(now()).toISOString(),
+        slot: snap.slot,
+        tokenMint: cfg.tokenMint,
+        supply: String(supplyRaw),
+        holders: snap.holders,
+        holderCount: snap.holders.length,
+        source: snap.source,
+      };
+      closeSnapshot.hash = snapshotHash(closeSnapshot);
+
+      const openLoaded = antiCheatEnabled(cfg)
+        ? await loadCycleOpenSnapshot({ db, cfg, roundId: round.id, simulated, logger })
+        : null;
+
+      let snapshotMode = 'close-only';
+      let combined = null;
+      let note = null;
+
+      if (!antiCheatEnabled(cfg)) {
+        note = 'anti-cheat is disabled by configuration (antiCheat=false): this round was weighted on the close snapshot alone.';
+      } else if (openLoaded) {
+        snapshotMode = openLoaded.mode;
+        combined = combineSnapshots(openLoaded.snapshot.holders, snap.holders);
+        const openAt = Date.parse(openLoaded.snapshot.takenAt ?? '');
+        const closeAt = Date.parse(closeSnapshot.takenAt);
+        const spanMs = Number.isFinite(openAt) && Number.isFinite(closeAt) ? closeAt - openAt : null;
+        if (openLoaded.mode === 'prev-close') {
+          note =
+            'no open snapshot was taken inside this cycle, so the previous round\'s close snapshot was used as the open. ' +
+            `It was taken at ${openLoaded.snapshot.takenAt ?? 'an unknown time'}.`;
+        }
+        const intervalMs = intervalMsFor(cfg);
+        if (spanMs !== null && spanMs > intervalMs * 1.5) {
+          const hours = Math.round((spanMs / 3600_000) * 10) / 10;
+          note = `${note ? `${note} ` : ''}The window covered by these two snapshots is ${hours}h, longer than one ${cfg.intervalHours ?? 6}h cycle.`;
+        } else if (spanMs !== null && spanMs < intervalMs / 4) {
+          // A short window is a weak window: it is the part of the cycle a
+          // wallet actually had to survive, so the ledger has to say how short.
+          const minutes = Math.max(0, Math.round(spanMs / 60_000));
+          note = `${note ? `${note} ` : ''}These two snapshots are only ${minutes}m apart, so this round enforced the rule over a shorter window than a full ${cfg.intervalHours ?? 6}h cycle.`;
+        }
+      } else {
+        note =
+          'no open snapshot was available for this cycle (nothing was taken inside it and there is no earlier close snapshot), ' +
+          'so the full-cycle rule could not be enforced for this round: it was weighted on the close snapshot alone.';
+        logger.warn?.(`round ${round.id}: ${note}`);
+      }
+
+      const holdersForRound = combined ? combined.holders : snap.holders;
+
+      const eligible = computeEligible(holdersForRound, {
         supplyRaw,
         eligibleBps: cfg.eligibleBps,
         excluded: cfg.excluded,
       });
 
       const snapshot = {
-        takenAt: snap.takenAt || new Date(now()).toISOString(),
+        takenAt: closeSnapshot.takenAt,
         slot: snap.slot,
         tokenMint: cfg.tokenMint,
         supply: String(supplyRaw),
@@ -578,9 +810,65 @@ export async function runRound(deps = {}) {
       };
       snapshot.hash = snapshotHash(snapshot);
 
+      const antiCheat = {
+        enabled: antiCheatEnabled(cfg),
+        mode: snapshotMode,
+        rule: 'weight = min(openBalance, closeBalance)',
+        windowMin: openWindowMinFor(cfg),
+        note,
+        stats: combined ? combined.stats : null,
+        // Wallets that bought inside this cycle are owed nothing now and will be
+        // weighted next round; naming them is the difference between an
+        // explanation and a mystery.
+        joinedThisCycle: combined
+          ? combined.holders
+              .filter((h) => h.joinedThisCycle)
+              .map((h) => ({ wallet: h.wallet, closeBalance: h.closeBalance }))
+          : [],
+        leftThisCycle: combined
+          ? combined.holders
+              .filter((h) => BigInt(h.openBalance) > 0n && BigInt(h.closeBalance) === 0n)
+              .map((h) => ({ wallet: h.wallet, openBalance: h.openBalance }))
+          : [],
+        reduced: combined
+          ? combined.holders
+              .filter((h) => h.reduced)
+              .map((h) => ({ wallet: h.wallet, openBalance: h.openBalance, closeBalance: h.closeBalance }))
+          : [],
+      };
+
+      // Whatever happened above, this close snapshot is the next cycle's open:
+      // one round of 'close-only' and the system is back on the full rule. It is
+      // only a placeholder, though — if the scheduler has already taken that
+      // cycle's real open (a late round and an early open window can overlap),
+      // that reading stands, because it is the unannounced one.
+      const nextId = roundIdFor(new Date((Date.parse(round.scheduledAt) || now()) + intervalMsFor(cfg)));
+      if (nextId !== round.id) {
+        const nextKey = openSnapshotKeyFor(nextId, simulated);
+        const alreadyOpen = await db.getKV(nextKey);
+        if (!usableSnapshot(alreadyOpen) || alreadyOpen.kind === 'close') {
+          await db.setKV(nextKey, { ...closeSnapshot, forRoundId: nextId });
+        }
+      }
+      await db.setKV(lastCloseKeyFor(simulated), closeSnapshot);
+
+      const snapshotRefs = {
+        snapshotMode,
+        antiCheat,
+        openSnapshot: openLoaded ? snapshotRef(openLoaded.snapshot, { key: openLoaded.key, mode: openLoaded.mode }) : null,
+        closeSnapshot: snapshotRef(closeSnapshot, {
+          key: lastCloseKeyFor(simulated),
+          mode: 'close',
+          // The same reading opens the next cycle, so the next round's ledger
+          // and this one point at the same hash.
+          opensRoundId: nextId === round.id ? null : nextId,
+        }),
+      };
+
       if (eligible.length === 0) {
         return await skip('no_holders', {
           snapshot,
+          ...snapshotRefs,
           universe: universe.stocks,
           universeSource: universe.source,
         });
@@ -625,6 +913,7 @@ export async function runRound(deps = {}) {
         // partway through the transfers — is worse than not running it.
         return await skip('rent_unfunded', {
           snapshot,
+          ...snapshotRefs,
           universe: universe.stocks,
           universeSource: universe.source,
           rentEstimate,
@@ -665,6 +954,7 @@ export async function runRound(deps = {}) {
       await save({
         status: 'SWAPPING',
         snapshot,
+        ...snapshotRefs,
         universe: universe.stocks,
         universeSource: universe.source,
         universeUpdatedAt: universe.updatedAt,
@@ -691,7 +981,8 @@ export async function runRound(deps = {}) {
         },
       });
       logger.info?.(
-        `round ${round.id}: ${plan.stats.eligibleHolders} eligible holders, ${plan.demand.length} stocks, pool ${round.poolLamports} lamports`,
+        `round ${round.id}: ${plan.stats.eligibleHolders} eligible holders, ${plan.demand.length} stocks, pool ${round.poolLamports} lamports` +
+          ` (snapshot ${snapshotMode}${combined ? `, ${combined.stats.joinedThisCycle} joined mid-cycle and are paid next round` : ''})`,
       );
     }
 

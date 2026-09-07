@@ -1,5 +1,5 @@
 /**
- * STOCKDROP — the rounds ledger.
+ * STOXVAULT — the rounds ledger.
  *
  * Every round the keeper ran, including the ones it skipped, because a skipped
  * round is evidence the keeper ran — not a failure to hide. Each row expands to
@@ -23,10 +23,10 @@ import {
   truncAddr,
   solscanTx,
   isoOf,
-  num,
   DASH,
 } from '../format.js';
 import { toast } from './toast.js';
+import { ledgerFootNote } from '../rules.js';
 
 const PAGE_SIZE = 25;
 
@@ -35,6 +35,39 @@ const SKIP_REASON = {
   low_pool: 'The pool was under the minimum, so the SOL carried over.',
   no_holders: 'No wallet met the eligibility threshold.',
 };
+
+/**
+ * How a round says it snapshotted. Anything the server sends that is not in
+ * this table is printed verbatim rather than dropped or guessed at.
+ */
+const SNAPSHOT_MODE = {
+  dual: 'two snapshots — weighted by the smaller balance',
+  double: 'two snapshots — weighted by the smaller balance',
+  min: 'two snapshots — weighted by the smaller balance',
+  'open-close': 'two snapshots — weighted by the smaller balance',
+  single: 'one snapshot, taken at the drop',
+  round: 'one snapshot, taken at the drop',
+};
+
+/**
+ * The opening or closing snapshot of an anti-cheat round, wherever the round
+ * document happens to carry it. Returns null when the round has none — an
+ * older round, or a server that does not record two.
+ *
+ * @param {object} round
+ * @param {'open'|'close'} side
+ */
+export function snapshotSide(round, side) {
+  const map = round?.snapshots && typeof round.snapshots === 'object' ? round.snapshots : null;
+  const candidates =
+    side === 'open'
+      ? [round?.snapshotOpen, round?.openSnapshot, map?.open, map?.opening]
+      : [round?.snapshotClose, round?.closeSnapshot, map?.close, map?.closing];
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) return candidate;
+  }
+  return null;
+}
 
 /** Statuses the CSS colours. Anything else is shown as-is, uncoloured. */
 const KNOWN_STATUS = new Set(['DONE', 'SKIPPED', 'FAILED', 'PENDING', 'SNAPSHOT', 'SWAPPING', 'DISTRIBUTING']);
@@ -184,6 +217,8 @@ export function createRounds({ onRetry, getStock } = {}) {
     set('pool', round.poolLamports ? `${lamportsToSolText(round.poolLamports, 4)} SOL` : DASH);
     set('skipReason', round.skipReason ? SKIP_REASON[round.skipReason] || round.skipReason : DASH);
 
+    fillSnapshotRows(content, round);
+
     const swapsBody = content.querySelector('[data-role="swaps-body"]');
     const swaps = Array.isArray(round.swaps) ? round.swaps : [];
     if (swapsBody && swapTpl) {
@@ -226,6 +261,48 @@ export function createRounds({ onRetry, getStock } = {}) {
     renderTransfers(content, round, transfers);
 
     inner.dataset.state = swaps.length === 0 && transfers.length === 0 ? 'empty' : 'ready';
+  }
+
+  /**
+   * The anti-cheat rows: which snapshot mode the round ran in, and both
+   * snapshots with their time and hash. A round that records none of it keeps
+   * its three rows hidden — this degrades silently by design, because the
+   * ledger must never show a snapshot that was not taken.
+   */
+  function fillSnapshotRows(content, round) {
+    const rowOf = (name) => content.querySelector(`[data-row="${name}"]`);
+    const valueOf = (name) => content.querySelector(`[data-field="${name}"]`);
+
+    const modeRow = rowOf('snapshotMode');
+    const modeRaw = typeof round.snapshotMode === 'string' ? round.snapshotMode.trim() : '';
+    if (modeRow) modeRow.hidden = !modeRaw;
+    if (modeRaw) {
+      const cell = valueOf('snapshotMode');
+      if (cell) {
+        cell.textContent = SNAPSHOT_MODE[modeRaw.toLowerCase()] || modeRaw;
+        cell.title = modeRaw;
+      }
+    }
+
+    for (const side of ['open', 'close']) {
+      const field = side === 'open' ? 'snapshotOpen' : 'snapshotClose';
+      const row = rowOf(field);
+      const cell = valueOf(field);
+      const snap = snapshotSide(round, side);
+      const takenAt = snap?.takenAt ?? snap?.at ?? null;
+      const hash = typeof snap?.hash === 'string' && snap.hash ? snap.hash : null;
+
+      if (!snap || (!takenAt && !hash)) {
+        if (row) row.hidden = true;
+        continue;
+      }
+      if (row) row.hidden = false;
+      if (!cell) continue;
+
+      const when = takenAt ? `${fmtDateTimeUtc(takenAt)} UTC` : DASH;
+      cell.textContent = hash ? `${when} · ${truncAddr(hash, 8, 8)}` : when;
+      cell.title = [takenAt ? isoOf(takenAt) : null, hash].filter(Boolean).join(' · ');
+    }
   }
 
   function decimalsFor(mint) {
@@ -420,12 +497,10 @@ export function createRounds({ onRetry, getStock } = {}) {
         emptyTime.textContent = `${fmtTimeUtc(config.nextRoundAt)} UTC`;
         emptyTime.title = isoOf(config.nextRoundAt);
       }
-      // num() and not Number(): Number(null) is 0, which would print
-      // "±null minutes" from a jitter the server never reported.
-      const jitter = num(config?.rules?.jitterMin);
-      if (footNote && jitter !== null) {
-        footNote.textContent = `Times are UTC. The snapshot is taken at a random offset within ±${jitter} minutes of each mark.`;
-      }
+      // The footnote states the same rule as "How it works" step 2, from the
+      // same flags. A server that reported no jitter gets no new sentence.
+      const note = ledgerFootNote(config);
+      if (footNote && note) footNote.textContent = note;
     },
 
     setLoading() {

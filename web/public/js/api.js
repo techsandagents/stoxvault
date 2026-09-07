@@ -1,5 +1,5 @@
 /**
- * STOCKDROP — the API client.
+ * STOXVAULT — the API client.
  *
  * One typed wrapper per endpoint in CONTRACT.md section 5. Everything the rest
  * of the app knows about the server passes through here, which is what makes it

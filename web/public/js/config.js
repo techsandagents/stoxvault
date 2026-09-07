@@ -1,5 +1,5 @@
 /**
- * STOCKDROP — runtime configuration.
+ * STOXVAULT — runtime configuration.
  *
  * A classic script (not a module) so it runs before app.js and can be edited by
  * hand on a deployed host without a build step. It sets exactly one thing:

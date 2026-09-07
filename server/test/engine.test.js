@@ -14,6 +14,7 @@ import {
   applySwapResults,
   buildRoundPlan,
   canonicalSnapshot,
+  combineSnapshots,
   computeDemand,
   computeEligible,
   defaultPicks,
@@ -673,4 +674,250 @@ test('buildRoundPlan still drops excluded, duplicate and empty wallets when elig
 test('buildRoundPlan refuses a negative pool instead of paying out backwards', () => {
   assert.throws(() => buildRoundPlan({ poolLamports: -1, universe: UNIVERSE }), RangeError);
   assert.throws(() => buildRoundPlan({ poolLamports: 1.5, universe: UNIVERSE }), TypeError);
+});
+
+// ------------------------------------------------------- combineSnapshots --
+
+/**
+ * The full-cycle rule. Five wallets, one per behaviour, so every assertion
+ * below is about exactly one thing a trader could try.
+ */
+const HELD = 'TEST_WALLET_HELD'; //       held the same balance all cycle
+const JOINED = 'TEST_WALLET_JOINED'; //   bought after the open snapshot
+const SOLD = 'TEST_WALLET_SOLD'; //       sold before the close snapshot
+const TOPPED = 'TEST_WALLET_TOPPED'; //   held some, added more mid-cycle
+const TRIMMED = 'TEST_WALLET_TRIMMED'; // held some, sold part mid-cycle
+
+const CYCLE_OPEN = [
+  { wallet: HELD, balance: '3000' },
+  { wallet: SOLD, balance: '5000' },
+  { wallet: TOPPED, balance: '1000' },
+  { wallet: TRIMMED, balance: '9000' },
+];
+const CYCLE_CLOSE = [
+  { wallet: HELD, balance: '3000' },
+  { wallet: JOINED, balance: '8000' },
+  { wallet: TOPPED, balance: '7000' },
+  { wallet: TRIMMED, balance: '2000' },
+];
+
+const rowFor = (holders, wallet) => holders.find((h) => h.wallet === wallet);
+
+test('combineSnapshots weights every wallet on min(open, close)', () => {
+  const { holders } = combineSnapshots(CYCLE_OPEN, CYCLE_CLOSE);
+
+  // Held all cycle: untouched.
+  const held = rowFor(holders, HELD);
+  assert.equal(held.balance, '3000');
+  assert.equal(held.joinedThisCycle, false);
+  assert.equal(held.reduced, false);
+
+  // Bought mid-cycle: absent from the open snapshot, so no weight at all.
+  const joined = rowFor(holders, JOINED);
+  assert.equal(joined.balance, '0');
+  assert.equal(joined.openBalance, '0');
+  assert.equal(joined.closeBalance, '8000');
+  assert.equal(joined.joinedThisCycle, true);
+  assert.equal(joined.reduced, false);
+
+  // Sold before the close: no weight either.
+  const sold = rowFor(holders, SOLD);
+  assert.equal(sold.balance, '0');
+  assert.equal(sold.closeBalance, '0');
+  assert.equal(sold.joinedThisCycle, false);
+
+  // Topped up: weighted on what it held all cycle, not on the peak.
+  const topped = rowFor(holders, TOPPED);
+  assert.equal(topped.balance, '1000');
+  assert.equal(topped.reduced, true);
+
+  // Trimmed: weighted on what survived to the close.
+  const trimmed = rowFor(holders, TRIMMED);
+  assert.equal(trimmed.balance, '2000');
+  assert.equal(trimmed.reduced, true);
+});
+
+test('combineSnapshots counts the wallets that carry no weight instead of hiding them', () => {
+  const { holders, stats } = combineSnapshots(CYCLE_OPEN, CYCLE_CLOSE);
+
+  assert.equal(holders.length, 5, 'every wallet seen in either snapshot is returned');
+  assert.equal(stats.wallets, 5);
+  assert.equal(stats.openHolders, 4);
+  assert.equal(stats.closeHolders, 4);
+  assert.equal(stats.held, 3, 'HELD, TOPPED and TRIMMED');
+  assert.equal(stats.zeroWeight, 2, 'JOINED and SOLD');
+  assert.equal(stats.joinedThisCycle, 1);
+  assert.equal(stats.leftThisCycle, 1);
+  assert.equal(stats.reduced, 2);
+  assert.equal(stats.steady, 1);
+
+  assert.equal(stats.openWeight, '18000');
+  assert.equal(stats.closeWeight, '20000');
+  assert.equal(stats.weight, '6000', '3000 + 1000 + 2000: nobody is weighted on a balance they did not hold');
+  assert.ok(BigInt(stats.weight) <= BigInt(stats.openWeight));
+  assert.ok(BigInt(stats.weight) <= BigInt(stats.closeWeight));
+
+  // Deterministic order: weight desc, then wallet, zero-weight wallets last.
+  assert.deepEqual(
+    holders.map((h) => h.wallet),
+    [HELD, TRIMMED, TOPPED, JOINED, SOLD],
+  );
+});
+
+test('combineSnapshots treats an empty or missing snapshot as zero everywhere', () => {
+  const noOpen = combineSnapshots([], CYCLE_CLOSE);
+  assert.equal(noOpen.stats.weight, '0');
+  assert.equal(noOpen.stats.joinedThisCycle, 4, 'with no open snapshot every wallet reads as a joiner');
+  for (const holder of noOpen.holders) assert.equal(holder.balance, '0');
+
+  const noClose = combineSnapshots(CYCLE_OPEN, []);
+  assert.equal(noClose.stats.weight, '0');
+  assert.equal(noClose.stats.leftThisCycle, 4);
+
+  assert.deepEqual(combineSnapshots([], []), {
+    holders: [],
+    stats: {
+      wallets: 0,
+      openHolders: 0,
+      closeHolders: 0,
+      held: 0,
+      joinedThisCycle: 0,
+      leftThisCycle: 0,
+      reduced: 0,
+      steady: 0,
+      zeroWeight: 0,
+      openWeight: '0',
+      closeWeight: '0',
+      weight: '0',
+    },
+  });
+
+  // Whole snapshot documents are accepted as well as bare holder arrays.
+  assert.deepEqual(
+    combineSnapshots({ holders: CYCLE_OPEN }, { holders: CYCLE_CLOSE }),
+    combineSnapshots(CYCLE_OPEN, CYCLE_CLOSE),
+  );
+});
+
+test('combineSnapshots is exact on balances far beyond Number.MAX_SAFE_INTEGER', () => {
+  const huge = 9_007_199_254_740_993n; // 2^53 + 1
+  const { holders, stats } = combineSnapshots(
+    [{ wallet: ALICE, balance: (huge + 1n).toString() }],
+    [{ wallet: ALICE, balance: huge.toString() }],
+  );
+  assert.equal(holders[0].balance, huge.toString());
+  assert.equal(stats.weight, huge.toString());
+});
+
+test('combineSnapshots refuses a negative or non-integer balance rather than guessing', () => {
+  assert.throws(() => combineSnapshots([{ wallet: ALICE, balance: '-1' }], []), RangeError);
+  assert.throws(() => combineSnapshots([], [{ wallet: ALICE, balance: '1.5' }]), TypeError);
+});
+
+test('eligibility is tested against the cycle minimum, not the closing balance', () => {
+  const threshold = ONE_MILLION_TOKENS; // 0.1% of supply
+  const open = [
+    { wallet: ALICE, balance: (threshold * 3n).toString() },
+    { wallet: BOB, balance: (threshold / 2n).toString() }, // under the bar at the open
+  ];
+  const close = [
+    { wallet: ALICE, balance: (threshold * 3n).toString() },
+    { wallet: BOB, balance: (threshold * 10n).toString() }, // bought in just before the drop
+  ];
+
+  const combined = combineSnapshots(open, close);
+  const eligible = computeEligible(combined.holders, { supplyRaw: SUPPLY_RAW, eligibleBps: 10 });
+
+  assert.deepEqual(eligible.map((h) => h.wallet), [ALICE], 'BOB cleared the threshold only at the close');
+  assert.equal(eligible[0].openBalance, (threshold * 3n).toString());
+  assert.equal(eligible[0].closeBalance, (threshold * 3n).toString());
+
+  // Judged on the close alone, BOB would have been paid — that is the hole.
+  const closeOnly = computeEligible(close, { supplyRaw: SUPPLY_RAW, eligibleBps: 10 });
+  assert.deepEqual(closeOnly.map((h) => h.wallet).sort(), [ALICE, BOB].sort());
+});
+
+test('the demand path spends the combined balance, so a mid-cycle buyer moves nothing', () => {
+  const solo = { ...DEFAULT_RULES, minPicks: 1, minPct: 1 };
+  const prefs = () =>
+    new Map([
+      [ALICE, [{ mint: mintOf('NVDAx'), pct: 100 }]],
+      [BOB, [{ mint: mintOf('TSLAx'), pct: 100 }]],
+    ]);
+
+  const open = [
+    { wallet: ALICE, balance: (ONE_MILLION_TOKENS * 2n).toString() },
+    { wallet: BOB, balance: (ONE_MILLION_TOKENS * 2n).toString() },
+  ];
+  // BOB triples his position minutes before the round.
+  const close = [
+    { wallet: ALICE, balance: (ONE_MILLION_TOKENS * 2n).toString() },
+    { wallet: BOB, balance: (ONE_MILLION_TOKENS * 6n).toString() },
+  ];
+
+  const combined = combineSnapshots(open, close);
+  const plan = buildRoundPlan({
+    poolLamports: TEN_SOL,
+    reserveLamports: 0n,
+    holders: computeEligible(combined.holders, { supplyRaw: SUPPLY_RAW, eligibleBps: 10 }),
+    prefsByWallet: prefs(),
+    universe: UNIVERSE,
+    rules: solo,
+  });
+
+  const nvda = plan.demand.find((d) => d.symbol === 'NVDAx');
+  const tsla = plan.demand.find((d) => d.symbol === 'TSLAx');
+  assert.equal(nvda.solLamports, tsla.solLamports, 'the top-up bought no extra weight this round');
+  assert.equal(nvda.shareBps, 5000);
+  assert.equal(tsla.shareBps, 5000);
+
+  // Next cycle, with that larger balance present at BOTH ends, it counts.
+  const nextCombined = combineSnapshots(close, close);
+  const nextPlan = buildRoundPlan({
+    poolLamports: TEN_SOL,
+    reserveLamports: 0n,
+    holders: computeEligible(nextCombined.holders, { supplyRaw: SUPPLY_RAW, eligibleBps: 10 }),
+    prefsByWallet: prefs(),
+    universe: UNIVERSE,
+    rules: solo,
+  });
+  assert.equal(nextPlan.demand.find((d) => d.symbol === 'TSLAx').shareBps, 7500);
+  assert.equal(nextPlan.demand.find((d) => d.symbol === 'NVDAx').shareBps, 2500);
+});
+
+test('value is conserved across a combined-snapshot round', () => {
+  const combined = combineSnapshots(CYCLE_OPEN, CYCLE_CLOSE);
+  const plan = buildRoundPlan({
+    poolLamports: TEN_SOL,
+    reserveLamports: 0n,
+    holders: combined.holders,
+    prefsByWallet: new Map(),
+    universe: UNIVERSE,
+    rules: DEFAULT_RULES,
+  });
+
+  // Zero-weight wallets are in the combined set but never in the plan.
+  assert.deepEqual(plan.eligible.map((h) => h.wallet).sort(), [HELD, TOPPED, TRIMMED].sort());
+
+  const spent = plan.demand.reduce((acc, d) => acc + BigInt(d.solLamports), 0n);
+  assert.ok(spent <= TEN_SOL);
+  assert.equal(spent + BigInt(plan.remainderLamports), TEN_SOL);
+
+  const swaps = plan.demand.map((d) => ({
+    mint: d.mint,
+    symbol: d.symbol,
+    status: 'DONE',
+    receivedRaw: (BigInt(d.solLamports) / 1000n).toString(),
+  }));
+  const applied = applySwapResults(plan, swaps, []);
+  const carry = new Map(applied.carryOut.map((c) => [c.mint, BigInt(c.amountRaw)]));
+  for (const swap of swaps) {
+    const handed = applied.transfers
+      .filter((t) => t.mint === swap.mint)
+      .reduce((acc, t) => acc + BigInt(t.amountRaw), 0n);
+    assert.equal(handed + (carry.get(swap.mint) ?? 0n), BigInt(swap.receivedRaw), `conservation failed for ${swap.symbol}`);
+  }
+  for (const transfer of applied.transfers) {
+    assert.ok([HELD, TOPPED, TRIMMED].includes(transfer.wallet), `${transfer.wallet} was paid without holding all cycle`);
+  }
 });

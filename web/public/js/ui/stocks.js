@@ -1,5 +1,5 @@
 /**
- * STOCKDROP — the Top 20 table and the stock drawer.
+ * STOXVAULT — the Top 20 table and the stock drawer.
  *
  * The table is the reference list: rank, ticker, company, price, 24h, market
  * cap, on-chain liquidity, and a 7-day sparkline drawn from the same history

@@ -1,5 +1,5 @@
 /**
- * STOCKDROP — boot and orchestration.
+ * STOXVAULT — boot and orchestration.
  *
  * Every section owns its own `[data-state]` container and its own try/catch, so
  * a slow universe, an unreachable RPC or a 500 on the ledger costs you that one
@@ -17,6 +17,7 @@ import { createVault } from './ui/vault.js';
 import { createRounds } from './ui/rounds.js';
 import { createDemand } from './ui/demand.js';
 import { toast, copyToClipboard } from './ui/toast.js';
+import { coinButtonState, snapshotRuleCopy } from './rules.js';
 import {
   fmtSol,
   fmtUsd,
@@ -33,8 +34,10 @@ import {
 
 /* -------------------------------------------------------------- constants -- */
 
+// The storage key is an internal identifier and stays as it is, so a returning
+// visitor keeps the theme they chose before the product was renamed.
 const THEME_KEY = 'stockdrop:theme';
-const BRAND = 'STOCKDROP';
+const BRAND = 'STOXVAULT';
 const BASE_TITLE = document.title;
 
 const POLL = {
@@ -303,6 +306,66 @@ function renderToken(config) {
   }
 }
 
+/* ------------------------------------------------------- contract address -- */
+
+const coinBtn = document.getElementById('btn-copy-ca');
+const coinTicker = document.getElementById('coin-ticker');
+
+/**
+ * The `$STOXVAULT` button in the nav copies the coin's mint.
+ *
+ * Before launch there is no mint, so the button is disabled, says why, and
+ * copies nothing — it never falls back to a placeholder that reads like an
+ * address. The moment `/api/config` reports a mint it enables itself; no code
+ * change is needed for launch day.
+ */
+function renderCoinButton(config) {
+  if (!coinBtn) return;
+  const { ticker, disabled, label } = coinButtonState(config);
+  if (coinTicker) coinTicker.textContent = ticker;
+  coinBtn.disabled = disabled;
+  coinBtn.title = label;
+  coinBtn.setAttribute('aria-label', label);
+}
+
+if (coinBtn) {
+  coinBtn.addEventListener('click', () => {
+    // The button is disabled without a mint, and this guard is the second lock:
+    // no mint, nothing copied, no toast claiming otherwise.
+    const mint = state.config?.token?.mint;
+    if (!mint) return;
+    copyToClipboard(mint, coinBtn, 'Contract address copied.');
+  });
+}
+
+/* --------------------------------------------------------- the drop rules -- */
+
+/**
+ * Step 2 of "How it works", written from `/api/config.rules`.
+ *
+ * The anti-cheat rule is an operator setting, so the page states whatever the
+ * running server reports: two snapshots and the smaller balance when
+ * `antiCheat` is on, the single-snapshot rule when it is off, and the shipped
+ * wording untouched when the server says nothing about it at all.
+ */
+function renderSnapshotRule(config) {
+  const titleEl = document.getElementById('step-snapshot-title');
+  const textEl = document.getElementById('step-snapshot-text');
+  if (!textEl) return;
+
+  const copy = snapshotRuleCopy(config);
+  if (!copy) return; // the server named no rule: say nothing new
+
+  // The paragraph is rebuilt, so the `#step-interval` span is re-created with
+  // it — basket.renderConfig writes the same number into it right after.
+  const interval = document.createElement('span');
+  interval.id = 'step-interval';
+  interval.textContent = copy.hours;
+
+  if (titleEl) titleEl.textContent = copy.title;
+  textEl.replaceChildren(copy.before, interval, copy.after);
+}
+
 /* -------------------------------------------------------------- hero stats -- */
 
 function renderStats(stats) {
@@ -367,7 +430,11 @@ async function loadConfig({ toastOnError = false } = {}) {
     state.config = config;
     setMode(config.mode);
     renderToken(config);
+    renderCoinButton(config);
     renderDefaultBasket(config);
+    // Before basket.renderConfig: it writes the interval into the
+    // `#step-interval` span this rewrite re-creates.
+    renderSnapshotRule(config);
     basket.renderConfig(config);
     vault.renderConfig(config);
     rounds.renderConfig(config);
@@ -776,17 +843,36 @@ function scheduleSoon(what, delay) {
   );
 }
 
+// The catch-up refresh below is throttled, and it has to be.
+//
+// `visibilitychange` is not always a person switching tabs. Embedded webviews,
+// some mobile browsers and preview panes flap the visibility state on their own
+// — measured here at six flips in six seconds — and an unthrottled refresh turns
+// each flip into an /api/universe and an /api/stats call. That is a request every
+// couple of seconds from a single idle tab, against endpoints that reach Jupiter
+// and the RPC, so it burns the project's RPC quota for no new information.
+//
+// A catch-up is only worth making when the data is actually stale, so skip it
+// when the last successful refresh is newer than this.
+const VISIBILITY_REFRESH_MIN_MS = 15000;
+let lastVisibilityRefresh = 0;
+
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     stopPolling();
     countdown.stop();
-  } else {
-    countdown.start();
-    startPolling();
-    // Coming back to a stale tab: refresh the cheap things immediately.
-    loadStats().catch(() => {});
-    loadUniverse().catch(() => {});
+    return;
   }
+  countdown.start();
+  startPolling();
+
+  // Coming back to a stale tab: refresh the cheap things immediately, but only
+  // if enough time has passed that they could have changed.
+  const now = Date.now();
+  if (now - lastVisibilityRefresh < VISIBILITY_REFRESH_MIN_MS) return;
+  lastVisibilityRefresh = now;
+  loadStats().catch(() => {});
+  loadUniverse().catch(() => {});
 });
 
 /* ------------------------------------------------------------------- boot -- */

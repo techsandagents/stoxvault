@@ -1,5 +1,5 @@
 /* ==========================================================================
-   STOCKDROP — design tokens
+   STOXVAULT — design tokens
    Light is the primary theme. Every colour is defined once on bare :root,
    then redefined (same names, different values) in two dark blocks:
      1. @media (prefers-color-scheme: dark) guarded with :root:not([data-theme="light"])

@@ -29,6 +29,7 @@ export {
   toBigInt,
   toNonNegativeBigInt,
   eligibleThreshold,
+  combineSnapshots,
   computeEligible,
   respreadPicks,
   effectiveBasket,

@@ -574,6 +574,11 @@ export function createStatsService({ cfg, db, universe, holders, now = Date.now 
     return {
       mode: cfg.mode,
       launched: cfg.launched,
+      // Whether a round pays on the smaller of the two balances it saw this
+      // cycle. The front page states the rule from this, so turning it off in
+      // the environment cannot leave the site claiming a protection it lost.
+      antiCheat: Boolean(cfg.antiCheat),
+      openSnapshotWindowMin: cfg.openSnapshotWindowMin ?? null,
       vault: { address: vault.address, balanceSol: vault.balanceSol, balanceUsd: vault.balanceUsd },
       solPriceUsd: vault.solPriceUsd,
       prefHolders,

@@ -1,5 +1,5 @@
 /* ==========================================================================
-   STOCKDROP — components
+   STOXVAULT — components
    Everything here is state-driven from markup attributes so the JS layer only
    ever sets: data-state, data-mode, data-dir, aria-*, hidden, and a handful of
    is-* classes documented in web/DOM.md.

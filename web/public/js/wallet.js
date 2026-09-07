@@ -1,10 +1,10 @@
 /**
- * STOCKDROP — wallet connection.
+ * STOXVAULT — wallet connection.
  *
  * Three wallets, one operation. The only thing this module ever asks a wallet to
  * do is `signMessage`. There is deliberately no code path here that can call
  * `signTransaction`, `signAndSendTransaction`, `request({method:'...'})` or any
- * RPC that moves value — connecting to STOCKDROP cannot cost you anything, and
+ * RPC that moves value — connecting to STOXVAULT cannot cost you anything, and
  * that is a property of the code, not a promise in the footer.
  *
  * Discovery follows the Wallet Standard:

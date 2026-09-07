@@ -1,4 +1,4 @@
-# STOCKDROP — web
+# STOXVAULT — web
 
 Static site. No build step, no bundler, no npm. `public/` is the deploy root:
 plain HTML, four CSS files and a handful of ES modules that the browser loads
@@ -10,15 +10,33 @@ public/
   css/{tokens,base,layout,components}.css
   assets/{logo,favicon}.svg
   js/
-    config.js           classic script: sets window.STOCKDROP.apiBase
+    config.js           classic script: sets window.STOCKDROP.apiBase (the
+                        global and the Railway host keep their old names — they
+                        are identifiers, not product copy)
     app.js              type="module": boot, polling, countdown, wallet session
     api.js              one typed wrapper per endpoint in ../../CONTRACT.md §5
     wallet.js           Phantom / Jupiter / Solflare, message signature only
     format.js           money, percents, base-unit amounts, UTC times
+    rules.js            the drop rules in words, derived from /api/config
+                        (anti-cheat copy, ledger footnote, $ticker button state)
     charts.js           inline-SVG donut + sparkline, lightweight-charts candles
     ui/                 one module per section (tape, stocks, basket, vault,
                         rounds, demand, toast)
+test/                   node:test files for the pure decision functions
 ```
+
+## Tests
+
+```bash
+node --test web/test/          # from the repo root, no dependencies
+```
+
+They cover the decisions taken before any element is touched: the anti-cheat
+copy derived from `/api/config.rules`, the ledger footnote, the state of the
+`$STOXVAULT` button (disabled and copying nothing while `token.mint` is null),
+the reading of `/api/me.cycle`, and finding a round's two snapshots. The server
+suite (`cd server && node --test test/`) additionally exercises
+`swapReceipt`, `picksPaneState` and `validateBasket` from these modules.
 
 ---
 
@@ -103,6 +121,20 @@ front end knows a hostname.
   error pane; it does not fall back to a placeholder. Before the token launches,
   the identity strip stays on `TBA — not launched` and no holder count, price or
   eligibility figure is shown.
+- **It does not show the vault address.** The vault panel reports the balance,
+  the fee reserve, the pool for the next round, the minimum to run and the
+  carry-over holdings. The address itself is rendered nowhere — not in the panel,
+  the hero or the footer — and there is no "send SOL here" instruction. The
+  `address` field on `/api/config` and `/api/vault` is read past.
+- **The `$STOXVAULT` button copies the mint or nothing.** Before launch
+  `config.token.mint` is null, so the button is disabled and says why in its
+  `title`; it enables itself the moment the server reports a mint. The value goes
+  to the clipboard (with an `execCommand` fallback), never into the URL.
+- **The drop rules come from the server.** "How it works" step 2 and the ledger
+  footnote are written from `rules.antiCheat` and `rules.openSnapshotWindowMin`:
+  two snapshots per cycle, one `openSnapshotWindowMin` before the mark and one at
+  the drop, and each wallet weighted by the smaller of the two balances. A server
+  that reports no such flag leaves the shipped single-snapshot wording alone.
 - **It labels simulated data.** When the server reports `mode !== 'LIVE'` the
   hero carries a `Simulated` badge, the projection panel carries one, and every
   round with `simulated: true` carries one in the ledger. A `tx` of `null`

@@ -1199,3 +1199,297 @@ test('GET /api/rounds carries no per-holder rows, while GET /api/rounds/:id is c
   assert.equal(full.json.transfers.length, 1000);
   assert.equal(full.json.universe.length, 20);
 });
+
+/* -------------------------------------------------- anti-cheat / cycle -- */
+
+/** A launched server whose chain answers with a fixed holder set. */
+async function makeLaunchedServer({ holder, holderRaw = '2000000000000', whale, env = {} } = {}) {
+  const deps = makeDeps({
+    rpc: {
+      async call(method, params) {
+        if (method === 'getBalance') return { value: 2_500_000_000 };
+        if (method === 'getSlot') return 777;
+        if (method === 'getTokenSupply') return { value: { amount: '1000000000000000', decimals: 6 } };
+        if (method === 'getProgramAccounts') {
+          return {
+            context: { slot: 777 },
+            value: [gpaRow(holder, BigInt(holderRaw)), gpaRow(whale, 8_000_000_000_000n)],
+          };
+        }
+        if (method === 'getTokenAccountsByOwner') {
+          const owner = params[0];
+          const amount = owner === holder ? holderRaw : owner === whale ? '8000000000000' : '0';
+          return { value: [{ account: { data: { parsed: { info: { tokenAmount: { amount } } } } } }] };
+        }
+        throw new Error(`unexpected ${method}`);
+      },
+    },
+  });
+  return makeServer({ env: { TOKEN_MINT: MEME_MINT, TOKEN_SYMBOL: 'DROP', ...env }, deps });
+}
+
+const minutesAgo = (min) => new Date(Date.now() - min * 60_000).toISOString();
+
+test('the anti-cheat settings are parsed, clamped and published in /api/config', async (t) => {
+  const s = await makeServer();
+  t.after(() => s.close());
+
+  assert.equal(s.cfg.antiCheat, true, 'anti-cheat defaults on');
+  assert.equal(s.cfg.openSnapshotWindowMin, 60);
+  assert.equal(s.cfg.rules.antiCheat, true);
+  assert.equal(s.cfg.rules.openSnapshotWindowMin, 60);
+  assert.equal(s.cfg.safeSummary().antiCheat, true);
+  assert.equal(s.cfg.safeSummary().openSnapshotWindowMin, 60);
+
+  const config = await get(s.port, '/api/config');
+  assert.equal(config.status, 200);
+  assert.equal(config.json.rules.antiCheat, true);
+  assert.equal(config.json.rules.openSnapshotWindowMin, 60);
+  // every documented field of /api/config is still there
+  assert.equal(config.json.rules.minPicks, 2);
+  assert.equal(config.json.rules.eligibleBps, 10);
+  assert.equal(config.json.rules.jitterMin, 10);
+  assert.equal(config.json.token.launched, false);
+  assert.equal(config.json.vault.address, VAULT_ADDRESS);
+  assert.ok(config.json.defaultBasket);
+
+  const off = buildConfig({ ANTICHEAT: '0', OPEN_SNAPSHOT_WINDOW_MIN: '90' });
+  assert.equal(off.antiCheat, false);
+  assert.equal(off.rules.antiCheat, false);
+  assert.equal(off.openSnapshotWindowMin, 90);
+
+  assert.equal(buildConfig({ OPEN_SNAPSHOT_WINDOW_MIN: '1' }).openSnapshotWindowMin, 5, 'clamped up to five minutes');
+  assert.equal(buildConfig({ OPEN_SNAPSHOT_WINDOW_MIN: '-30' }).openSnapshotWindowMin, 5);
+  assert.equal(
+    buildConfig({ OPEN_SNAPSHOT_WINDOW_MIN: '9999' }).openSnapshotWindowMin,
+    360,
+    'never longer than the 6h round interval',
+  );
+  assert.equal(
+    buildConfig({ OPEN_SNAPSHOT_WINDOW_MIN: '9999', ROUND_INTERVAL_HOURS: '1' }).openSnapshotWindowMin,
+    60,
+    'the clamp follows the configured interval',
+  );
+  assert.equal(buildConfig({ OPEN_SNAPSHOT_WINDOW_MIN: 'soon' }).openSnapshotWindowMin, 60, 'nonsense falls back to the default');
+
+  const stats = await get(s.port, '/api/stats');
+  assert.equal(stats.json.antiCheat, true, '/api/stats says whether the rule is on');
+  assert.equal(stats.json.openSnapshotWindowMin, 60);
+  assert.equal(stats.json.rounds.totalSolDistributed, 0, 'and the distributed total is untouched');
+});
+
+test('/api/me reports an honest cycle before launch', async (t) => {
+  const s = await makeServer();
+  t.after(() => s.close());
+
+  const { token, me: verified } = await signIn(s.port);
+  const me = await get(s.port, '/api/me', { headers: { authorization: `Bearer ${token}` } });
+  assert.equal(me.status, 200, me.text);
+  const cycle = me.json.cycle;
+  assert.ok(cycle, '/api/me carries a cycle object');
+  assert.equal(cycle.antiCheat, true);
+  assert.equal(cycle.windowMin, 60);
+  assert.equal(Date.parse(cycle.nextRoundAt) - Date.parse(cycle.opensAt), 60 * 60_000, 'the window opens an hour before the mark');
+  assert.equal(cycle.inOpenSnapshot, null, 'no snapshot is invented when there is no token');
+  assert.equal(cycle.openSnapshotAt, null);
+  assert.equal(cycle.openBalanceRaw, null);
+  assert.equal(cycle.currentBalanceRaw, null);
+  assert.equal(cycle.effectiveBalanceRaw, null);
+  assert.equal(cycle.eligible, null, 'eligibility is unknown, not false');
+  assert.equal(cycle.thresholdRaw, '1000000000000');
+  assert.ok(cycle.note.includes('has not launched'), cycle.note);
+  assert.deepEqual(verified.cycle, cycle, 'verify returns the same cycle as GET /api/me');
+});
+
+test('/api/me explains each anti-cheat case once the coin is live', async (t) => {
+  const holder = newWallet();
+  const whale = newWallet().address;
+  const s = await makeLaunchedServer({ holder: holder.address, whale });
+  t.after(() => s.close());
+
+  const { token } = await signIn(s.port, holder);
+  const auth = { authorization: `Bearer ${token}` };
+  const cycleNow = async () => (await get(s.port, '/api/me', { headers: auth })).json.cycle;
+
+  // 1. the keeper has not opened this cycle's snapshot yet
+  const pending = await cycleNow();
+  assert.equal(pending.currentBalanceRaw, '2000000000000');
+  assert.equal(pending.currentBalanceUi, 2_000_000);
+  assert.equal(pending.inOpenSnapshot, null, 'no snapshot is invented');
+  assert.equal(pending.openBalanceRaw, null);
+  assert.equal(pending.eligible, null);
+  assert.ok(pending.note.includes('No opening snapshot'), pending.note);
+
+  // 2. a snapshot from a previous cycle is not this cycle's
+  await s.db.setKV('snapshot:open', {
+    takenAt: minutesAgo(60 * 24),
+    hash: 'stale',
+    holders: [{ wallet: holder.address, balance: '9000000000000' }],
+  });
+  const stale = await cycleNow();
+  assert.equal(stale.openSnapshotAt, null, 'a stale snapshot is treated as absent');
+  assert.ok(stale.note.includes('No opening snapshot'), stale.note);
+
+  // 3. held all cycle: the smaller (opening) figure still clears the bar
+  await s.db.setKV('snapshot:open', {
+    takenAt: minutesAgo(5),
+    hash: 'open_hash',
+    holders: [{ wallet: holder.address, balance: '1500000000000' }, { wallet: whale, balance: '8000000000000' }],
+  });
+  const held = await cycleNow();
+  assert.equal(held.inOpenSnapshot, true);
+  assert.equal(held.openSnapshotHash, 'open_hash');
+  assert.equal(held.openBalanceRaw, '1500000000000');
+  assert.equal(held.effectiveBalanceRaw, '1500000000000', 'the smaller of the two counts');
+  assert.equal(held.effectiveBalanceUi, 1_500_000);
+  assert.equal(held.eligible, true);
+  assert.ok(held.note.includes('all cycle'), held.note);
+
+  // 4. sold during the cycle: the smaller figure is the one held now
+  await s.db.setKV('snapshot:open', {
+    takenAt: minutesAgo(5),
+    hash: 'open_hash',
+    holders: [{ wallet: holder.address, balance: '3000000000000' }],
+  });
+  const fell = await cycleNow();
+  assert.equal(fell.openBalanceRaw, '3000000000000');
+  assert.equal(fell.effectiveBalanceRaw, '2000000000000');
+  assert.equal(fell.eligible, true);
+  assert.ok(fell.note.includes('fell during this cycle'), fell.note);
+
+  // 5. bought this cycle: not in the opening snapshot at all
+  await s.db.setKV('snapshot:open', {
+    takenAt: minutesAgo(5),
+    hash: 'open_hash',
+    holders: [{ wallet: whale, balance: '8000000000000' }],
+  });
+  const bought = await cycleNow();
+  assert.equal(bought.inOpenSnapshot, false);
+  assert.equal(bought.openBalanceRaw, '0');
+  assert.equal(bought.effectiveBalanceRaw, '0');
+  assert.equal(bought.eligible, false);
+  assert.ok(bought.note.includes('next one'), bought.note);
+
+  // 6. under the threshold when the cycle opened, even though it holds more now
+  await s.db.setKV('snapshot:open', {
+    takenAt: minutesAgo(5),
+    hash: 'open_hash',
+    holders: [{ wallet: holder.address, balance: '10000000' }],
+  });
+  const thin = await cycleNow();
+  assert.equal(thin.eligible, false);
+  assert.equal(thin.effectiveBalanceRaw, '10000000');
+  assert.ok(thin.note.includes('when this cycle opened'), thin.note);
+});
+
+test('/api/me: a wallet under the threshold, and anti-cheat switched off', async (t) => {
+  const holder = newWallet();
+  const stranger = newWallet();
+  const whale = newWallet().address;
+  const s = await makeLaunchedServer({ holder: holder.address, whale });
+  t.after(() => s.close());
+
+  const { token } = await signIn(s.port, stranger);
+  const poor = (await get(s.port, '/api/me', { headers: { authorization: `Bearer ${token}` } })).json.cycle;
+  assert.equal(poor.currentBalanceRaw, '0');
+  assert.equal(poor.eligible, false);
+  assert.ok(poor.note.includes('needed to qualify'), poor.note);
+
+  const off = await makeLaunchedServer({ holder: holder.address, whale, env: { ANTICHEAT: '0' } });
+  t.after(() => off.close());
+  const signedIn = await signIn(off.port, holder);
+  const cycle = (await get(off.port, '/api/me', { headers: { authorization: `Bearer ${signedIn.token}` } })).json.cycle;
+  assert.equal(cycle.antiCheat, false);
+  assert.equal(cycle.effectiveBalanceRaw, '2000000000000', 'with the rule off, the round snapshot alone decides');
+  assert.equal(cycle.eligible, true);
+  assert.equal(cycle.inOpenSnapshot, null);
+  assert.ok(cycle.note.includes('Anti-cheat is off'), cycle.note);
+  assert.equal((await get(off.port, '/api/config')).json.rules.antiCheat, false);
+  assert.equal((await get(off.port, '/api/stats')).json.antiCheat, false);
+});
+
+/** The same heavy round, plus the two snapshots the anti-cheat keeper records. */
+function twoSnapshotRound(id, createdAt, holders = 50) {
+  const base = heavyRound(id, { simulated: true, status: 'DONE', solSpentLamports: '2450000000', holders, createdAt });
+  return {
+    ...base,
+    snapshotMode: 'min-of-open-and-round',
+    openSnapshot: {
+      takenAt: new Date(Date.parse(createdAt) - 60 * 60_000).toISOString(),
+      slot: 1,
+      tokenMint: MEME_MINT,
+      hash: `open_${id}`,
+      holders: base.snapshot.holders,
+    },
+    closeSnapshot: { ...base.snapshot, hash: `close_${id}` },
+  };
+}
+
+test('the rounds ledger publishes both snapshots and the rule each round used', async (t) => {
+  const s = await makeServer();
+  t.after(() => s.close());
+
+  await s.db.createRound(twoSnapshotRound('r_two', iso(9), 300));
+
+  const list = await get(s.port, '/api/rounds');
+  assert.equal(list.status, 200, list.text);
+  const item = list.json.items[0];
+  assert.equal(item.snapshotMode, 'min-of-open-and-round');
+  assert.equal(item.snapshots.open.takenAt, new Date(Date.parse(iso(9)) - 60 * 60_000).toISOString());
+  assert.equal(item.snapshots.open.hash, 'open_r_two');
+  assert.equal(item.snapshots.open.holderCount, 300);
+  assert.equal(item.snapshots.close.takenAt, iso(9));
+  assert.equal(item.snapshots.close.hash, 'close_r_two');
+  assert.equal(item.snapshots.open.holders, undefined, 'a list never carries holder rows');
+  assert.equal(item.openSnapshot.holders, undefined);
+  assert.equal(item.closeSnapshot.holders, undefined);
+  assert.equal(item.openSnapshot.holderCount, 300);
+  const text = JSON.stringify(list.json);
+  assert.equal(text.includes('Holder0000'), false, 'not one holder address leaks through the new fields');
+  assert.ok(text.length < 8_000, `a 300-holder two-snapshot round still summarises small, got ${text.length} bytes`);
+
+  const full = await get(s.port, '/api/rounds/r_two');
+  assert.equal(full.status, 200, full.text);
+  assert.equal(full.json.snapshotMode, 'min-of-open-and-round');
+  assert.equal(full.json.openSnapshot.holders.length, 300, 'the full document is still reproducible');
+  assert.equal(full.json.closeSnapshot.holders.length, 300);
+  assert.equal(full.json.snapshots.open.hash, 'open_r_two');
+  assert.equal(full.json.snapshots.close.hash, 'close_r_two');
+  assert.equal(full.json.snapshots.open.holderCount, 300);
+});
+
+test('a round written before the anti-cheat rule degrades instead of throwing', async (t) => {
+  const s = await makeServer();
+  t.after(() => s.close());
+
+  await s.db.createRound(heavyRound('r_old', { simulated: true, status: 'DONE', solSpentLamports: '1000000000', holders: 3, createdAt: iso(10) }));
+  await s.db.createRound({
+    id: 'r_bare',
+    createdAt: iso(11),
+    scheduledAt: iso(11),
+    status: 'SKIPPED',
+    simulated: true,
+    skipReason: 'no_token',
+    snapshot: null,
+  });
+
+  const list = await get(s.port, '/api/rounds');
+  assert.equal(list.status, 200, list.text);
+  const bare = list.json.items.find((r) => r.id === 'r_bare');
+  const old = list.json.items.find((r) => r.id === 'r_old');
+  assert.deepEqual(bare.snapshots, { open: null, close: null }, 'a skipped round snapshotted nothing');
+  assert.equal(bare.snapshotMode, null, 'the rule is copied, never guessed');
+  assert.equal(old.snapshotMode, null);
+  assert.equal(old.snapshots.open, null, 'an older round has no opening snapshot');
+  assert.equal(old.snapshots.close.hash, 'h_r_old', 'its one snapshot is published as the closing one');
+  assert.equal(old.snapshots.close.holderCount, 3);
+
+  const oldFull = await get(s.port, '/api/rounds/r_old');
+  assert.equal(oldFull.status, 200);
+  assert.equal(oldFull.json.snapshots.open, null);
+  assert.equal(oldFull.json.snapshot.holders.length, 3, 'the stored document is untouched');
+  const bareFull = await get(s.port, '/api/rounds/r_bare');
+  assert.equal(bareFull.status, 200);
+  assert.deepEqual(bareFull.json.snapshots, { open: null, close: null });
+  assert.equal(bareFull.json.snapshotMode, null);
+});
