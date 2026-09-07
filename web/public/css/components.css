@@ -1387,3 +1387,16 @@ dialog::backdrop { background: var(--overlay); }
   border-bottom: 1px solid var(--rule);
 }
 .faq__a:last-child { border-bottom: 0; }
+
+/* The X link in the footer's bottom row. The icon needs to sit on the text
+   baseline rather than the line box, or it rides high next to the mono labels. */
+.foot__x {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.foot__x-icon {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+}

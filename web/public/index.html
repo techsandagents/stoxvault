@@ -81,6 +81,16 @@
           </svg>
         </button>
 
+        <!-- The project's X account. rel="noopener" because it opens in a new
+             tab; "me" marks it as an identity link for the same entity. -->
+        <a class="btn btn--icon" id="link-x" href="https://x.com/stoxvaultcom"
+           target="_blank" rel="me noopener noreferrer"
+           title="STOXVAULT on X" aria-label="STOXVAULT on X (opens in a new tab)">
+          <svg class="btn__icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="M12.03 1.5h2.2L9.42 7l5.66 7.5h-4.43L7.18 9.96 3.3 14.5H1.1l5.14-5.88L.8 1.5h4.54l3.13 4.14L12.03 1.5Zm-.78 11.68h1.22L4.8 2.75H3.5l7.75 10.43Z"/>
+          </svg>
+        </a>
+
         <!-- Copies the coin's contract address. Disabled until the mint exists:
              the label still names the ticker, and the title says why. -->
         <button class="btn nav__coin" id="btn-copy-ca" type="button"
@@ -1280,6 +1290,12 @@
 
     <div class="foot__bottom">
       <span>STOXVAULT</span>
+      <a class="link foot__x" href="https://x.com/stoxvaultcom" target="_blank" rel="me noopener noreferrer">
+        <svg class="foot__x-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M12.03 1.5h2.2L9.42 7l5.66 7.5h-4.43L7.18 9.96 3.3 14.5H1.1l5.14-5.88L.8 1.5h4.54l3.13 4.14L12.03 1.5Zm-.78 11.68h1.22L4.8 2.75H3.5l7.75 10.43Z"/>
+        </svg>
+        <span>@stoxvaultcom</span>
+      </a>
       <span class="mono" id="footer-mode">mode —</span>
       <span class="mono" id="footer-api">api —</span>
       <span class="mono" id="footer-updated">—</span>
