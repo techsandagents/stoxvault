@@ -279,6 +279,18 @@ export function createJupiter(cfg = {}, opts = {}) {
           decimals: num(entry.decimals),
           blockId: num(entry.blockId),
           stockData: stock ? { price: num(stock.price), mcap: num(stock.mcap) } : null,
+          // Token-2022 scaledUiAmount: wallets display rawAmount * multiplier.
+          // Backed raises it as the position accrues, so it must be carried
+          // through rather than assumed to be 1.
+          scaledUiConfig: entry.scaledUiConfig && typeof entry.scaledUiConfig === 'object'
+            ? {
+              multiplier: num(entry.scaledUiConfig.multiplier),
+              newMultiplier: num(entry.scaledUiConfig.newMultiplier),
+              newMultiplierEffectiveAt: typeof entry.scaledUiConfig.newMultiplierEffectiveAt === 'string'
+                ? entry.scaledUiConfig.newMultiplierEffectiveAt
+                : null,
+            }
+            : null,
         };
       }
     }
@@ -319,6 +331,12 @@ export function createJupiter(cfg = {}, opts = {}) {
       tokenMcap: num(token.mcap) ?? seed?.tokenMcap ?? null,
       liquidityUsd: num(price?.liquidity) ?? num(token.liquidity) ?? seed?.liquidityUsd ?? null,
       holderCount: num(token.holderCount) ?? seed?.holderCount ?? null,
+      // Token-2022 scaledUiAmount. A wallet shows rawAmount * multiplier, and
+      // Backed raises the multiplier as the position accrues, so assuming 1
+      // would make our numbers disagree with the holder's own wallet.
+      // Verified live 2026-09-07: NVDAx 1.000103, AAPLx 1.002664, TSLAx 1.
+      // Raw base units remain the truth everywhere money is moved.
+      uiMultiplier: num(price?.scaledUiConfig?.multiplier) ?? seed?.uiMultiplier ?? 1,
     };
   }
 

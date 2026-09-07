@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Keypair } from '@solana/web3.js';
+import { ComputeBudgetProgram, Keypair, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 
 import { openDb } from '../src/db/index.js';
 import { applySwapResults, buildRoundPlan } from '../src/engine/index.js';
@@ -274,9 +274,18 @@ test('runRound: DRY_RUN happy path matches the engine exactly, is flagged simula
     for (const swap of round.swaps) assert.equal(swap.tx, null);
     for (const transfer of round.transfers) assert.equal(transfer.tx, null);
 
-    /* the money adds up */
+    /* the money adds up, after the round pays for its own token accounts */
     const pool = BigInt(round.poolLamports);
-    assert.equal(pool, 2_450_000_000n);
+    const rent = round.rentEstimate;
+    // 3 holders: 2 picks + 5 default picks + 2 picks = 9 recipient accounts.
+    assert.equal(rent.accounts, 9);
+    assert.equal(rent.perAccountLamports, '2074080');
+    assert.equal(rent.rentLamports, (9n * 2_074_080n).toString());
+    // 6 swaps + one 8-per-batch transfer tx per stock = 12 transactions.
+    assert.equal(rent.txCount, 12);
+    assert.equal(rent.feeLamports, (12n * (5_000n + BigInt(cfg.priorityFeeLamports))).toString());
+    assert.equal(pool, 2_450_000_000n - BigInt(rent.totalLamports));
+    assert.equal(BigInt(round.balanceLamports) - BigInt(round.reserveLamports), pool, 'balance = pool + reserve');
     assert.ok(sum(round.demand, (d) => d.solLamports) <= pool, 'never allocates more than the pool');
     assert.equal(round.demand.reduce((acc, d) => acc + d.shareBps, 0), 10000);
 
@@ -332,7 +341,9 @@ test('runRound: DRY_RUN happy path matches the engine exactly, is flagged simula
     const stored = await db.getRound(round.id);
     assert.equal(stored.status, 'DONE');
     assert.equal(stored.transfers.length, round.transfers.length);
-    assert.deepEqual(await db.getKV('carry'), round.carryOut);
+    // A rehearsal keeps its dust in its own key; the live carry is untouched.
+    assert.deepEqual(await db.getKV('carry:sim'), round.carryOut);
+    assert.equal(await db.getKV('carry'), null);
   } finally {
     await close();
   }
@@ -715,6 +726,92 @@ test('scheduler: jitter is deterministic per round id and inside the configured 
   assert.ok(late.fireAt.getTime() >= Date.parse('2026-09-07T12:00:30Z'));
 });
 
+test('scheduler: a negative jitter never re-fires the same mark', async () => {
+  const { db, close } = await makeDb('jitter-loop');
+  try {
+    const cfg = makeCfg();
+    // The mark that exposed this: 12:00Z fires 403 seconds EARLY, so a round
+    // that takes two minutes is still finished before its own mark.
+    assert.equal(jitterFor('r_2026-09-08T12', 10).seconds, -403);
+
+    // Planning is anchored on the last mark handled, not only on the clock.
+    const after = planNext(cfg, Date.parse('2026-09-08T11:55:17Z'), Date.parse('2026-09-08T12:00:00Z'));
+    assert.equal(after.mark.toISOString(), '2026-09-08T18:00:00.000Z');
+    assert.equal(after.roundId, 'r_2026-09-08T18');
+
+    let clock = Date.parse('2026-09-08T11:00:00Z');
+    const timers = [];
+    const runs = [];
+    const keeper = start({
+      cfg,
+      db,
+      rpc: {},
+      jup: {},
+      runRound: async (deps) => {
+        runs.push(new Date(deps.scheduledAt).toISOString());
+        clock += 2 * 60_000; // the round takes two minutes
+        return { id: `r${runs.length}`, status: 'DONE', finishedAt: new Date(clock).toISOString(), error: null };
+      },
+      now: () => clock,
+      setTimer: (fn, ms) => {
+        timers.push({ fn, ms });
+        return timers.length;
+      },
+      clearTimer: () => {},
+    });
+    await keeper.ready();
+
+    for (let i = 0; i < 6 && timers.length > 0; i++) {
+      const timer = timers.shift();
+      clock += timer.ms;
+      await timer.fn();
+    }
+    keeper.stop();
+
+    assert.equal(runs.length, 6, 'one round per fire, not a burst');
+    assert.deepEqual(runs, [...new Set(runs)], 'no mark is ever run twice');
+    assert.deepEqual(runs.slice(0, 4), [
+      '2026-09-08T12:00:00.000Z',
+      '2026-09-08T18:00:00.000Z',
+      '2026-09-09T00:00:00.000Z',
+      '2026-09-09T06:00:00.000Z',
+    ]);
+  } finally {
+    await close();
+  }
+});
+
+test('scheduler: a restart does not re-run the mark the last round already handled', async () => {
+  const { db, close } = await makeDb('jitter-restart');
+  try {
+    const cfg = makeCfg();
+    // The 12:00 round ran at 11:53 (jitter -403s) and the process restarted at
+    // 11:56, before its own mark.
+    await db.createRound({ id: 'r_2026-09-08T12', status: 'DONE', scheduledAt: '2026-09-08T12:00:00.000Z' });
+
+    let ran = 0;
+    const keeper = start({
+      cfg,
+      db,
+      runRound: async () => {
+        ran += 1;
+        return null;
+      },
+      now: () => Date.parse('2026-09-08T11:56:00Z'),
+      setTimer: () => 1,
+      clearTimer: () => {},
+    });
+    await keeper.ready();
+
+    assert.equal(ran, 0, 'nothing was unfinished, so nothing ran');
+    assert.equal(keeper.status().nextRoundId, 'r_2026-09-08T18');
+    assert.equal(keeper.status().lastMark, '2026-09-08T12:00:00.000Z');
+    keeper.stop();
+  } finally {
+    await close();
+  }
+});
+
 test('scheduler: resumes an unfinished round on boot before scheduling the next one', async () => {
   const { db, close } = await makeDb('boot');
   try {
@@ -765,6 +862,446 @@ test('scheduler: resumes an unfinished round on boot before scheduling the next 
     keeper.stop();
     assert.equal(keeper.nextRoundAt(), null);
     assert.equal(keeper.status().stopped, true);
+  } finally {
+    await close();
+  }
+});
+
+/* ------------------------------------------- LIVE: sending exactly once */
+
+/**
+ * A LIVE chain that actually settles.
+ *
+ * Every send is counted and keyed by the transaction's own signature, and a
+ * send that "lands" credits the vault's balance of the mint being bought. The
+ * `script` decides, per send in order, what the keeper is allowed to learn:
+ * whether the confirmation succeeds, whether the transaction really landed, and
+ * whether the cluster will admit to having seen it. That is the whole space of
+ * ways a swap can go wrong, and none of them may produce a second send for one
+ * allocation.
+ */
+function makeSettlingChain({ script = [], balanceLamports = 2_500_000_000n, slipped = 97n } = {}) {
+  // A fresh blockhash per build, so every swap transaction has its own
+  // signature exactly as it would on chain.
+  const unsignedTx = () =>
+    new VersionedTransaction(
+      new TransactionMessage({
+        payerKey: VAULT_KEY.publicKey,
+        recentBlockhash: Keypair.generate().publicKey.toBase58(),
+        instructions: [ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 })],
+      }).compileToV0Message(),
+    );
+
+  const balances = new Map(); // mint -> vault holding, base units
+  const bySignature = new Map(); // signature -> behaviour
+  const calls = { quote: [], sends: [], statusLookups: 0, transfers: [] };
+  const lamportsByMint = new Map();
+  let pendingMint = null;
+
+  const fillFor = (mint) => ((lamportsByMint.get(mint) / 1000n) * slipped) / 100n;
+
+  const rpc = {
+    async getBalanceLamports() {
+      return balanceLamports;
+    },
+    async getTokenSupply() {
+      return { amountRaw: 1_000_000_000_000_000n, decimals: 6, uiAmountString: '1000000000' };
+    },
+    async sendRawTransaction(raw) {
+      const tx = VersionedTransaction.deserialize(raw);
+      const signature = b58encode(tx.signatures[0]);
+      const behaviour = script[calls.sends.length] ?? { confirm: 'confirmed', lands: true, visible: true };
+      const mint = pendingMint;
+      calls.sends.push({ signature, mint });
+      bySignature.set(signature, { ...behaviour, mint });
+      if (behaviour.lands !== false) balances.set(mint, (balances.get(mint) ?? 0n) + fillFor(mint));
+      return signature;
+    },
+    async confirmSignature(signature) {
+      const behaviour = bySignature.get(signature);
+      return { signature, status: behaviour?.confirm ?? 'confirmed', slot: 1, err: null };
+    },
+    async getSignatureStatuses(signatures, opts = {}) {
+      calls.statusLookups += 1;
+      assert.equal(opts.searchTransactionHistory, true, 'a reconciliation must search transaction history');
+      return signatures.map((signature) => {
+        const behaviour = bySignature.get(signature);
+        if (!behaviour || behaviour.visible === false) return null;
+        if (behaviour.lands === false) return { slot: 1, confirmations: 0, confirmationStatus: 'confirmed', err: { InstructionError: [0, 'custom'] } };
+        return { slot: 1, confirmations: 0, confirmationStatus: 'confirmed', err: null };
+      });
+    },
+  };
+
+  const jup = {
+    async quote({ outputMint, amount }) {
+      calls.quote.push(outputMint);
+      pendingMint = outputMint;
+      lamportsByMint.set(outputMint, BigInt(amount));
+      return { inAmount: String(amount), outAmount: (BigInt(amount) / 1000n).toString(), outputMint, routePlan: [] };
+    },
+    async buildSwapTx() {
+      return { swapTransaction: Buffer.from(unsignedTx().serialize()).toString('base64'), lastValidBlockHeight: 1000, simulationError: null };
+    },
+  };
+
+  const dist = {
+    async balanceOf(owner, mint) {
+      return balances.get(mint) ?? 0n;
+    },
+    async measureReceived(owner, mint, beforeRaw) {
+      const after = balances.get(mint) ?? 0n;
+      const before = BigInt(beforeRaw ?? 0);
+      return { beforeRaw: before, afterRaw: after, receivedRaw: after > before ? after - before : 0n };
+    },
+    async ensureAndTransfer(vaultKeypair, mint, decimals, rows) {
+      calls.transfers.push({ mint, wallets: rows.map((r) => r.wallet) });
+      const tx = `xfer${calls.transfers.length}`;
+      return rows.map((row) => ({ wallet: row.wallet, mint, amountRaw: row.amountRaw, tx, status: 'DONE', error: null }));
+    },
+  };
+
+  const { universeService, holdersService } = makeFakes();
+  return { cfg: makeCfg({ LIVE: '1' }), rpc, jup, dist, universeService, holdersService, calls, balances, fillFor };
+}
+
+test('runRound: a crash between send and persist leaves a SENDING row, and the resume adopts it instead of sending again', async () => {
+  const { db, close } = await makeDb('sending-intent');
+  try {
+    const chain = makeSettlingChain();
+    const { cfg, rpc, jup, dist, universeService, holdersService, calls } = chain;
+
+    // A store that dies the instant the runner tries to record a finished swap:
+    // the send already happened, the result never reaches disk. That is a SIGKILL
+    // between rpc.sendRawTransaction and save({swaps}).
+    let crash = true;
+    const crashingDb = {
+      ...db,
+      async updateRound(id, patch) {
+        const finishing = Array.isArray(patch.swaps) && patch.swaps.some((s) => s.status === 'DONE');
+        if (crash && (finishing || patch.status === 'FAILED')) throw new Error('process died');
+        return db.updateRound(id, patch);
+      },
+    };
+
+    await assert.rejects(
+      () => runRound({ cfg, db: crashingDb, rpc, jup, dist, vault: VAULT_KEY, universeService, holdersService }),
+      /process died/,
+    );
+
+    assert.equal(calls.sends.length, 1, 'exactly one transaction was sent before the crash');
+    const firstSend = calls.sends[0];
+
+    const midway = await db.unfinishedRound();
+    assert.equal(midway.status, 'SWAPPING');
+    const intent = midway.swaps.find((s) => s.mint === firstSend.mint);
+    assert.equal(intent.status, 'SENDING', 'the intent was written BEFORE the transaction was sent');
+    assert.equal(intent.tx, firstSend.signature, 'the intent carries the signature that went to the cluster');
+    assert.equal(intent.beforeRaw, '0', 'and the pre-send vault balance of that mint');
+
+    crash = false;
+    const resumed = await runRound({ cfg, db, rpc, jup, dist, vault: VAULT_KEY, universeService, holdersService });
+
+    assert.equal(resumed.id, midway.id);
+    assert.equal(resumed.status, 'DONE', resumed.error ?? '');
+    assert.equal(
+      calls.sends.filter((s) => s.signature === firstSend.signature).length,
+      1,
+      'the swap that already landed was never sent a second time',
+    );
+    assert.equal(calls.sends.length, resumed.swaps.length, 'one send per stock, no more');
+    assert.equal(new Set(calls.sends.map((s) => s.mint)).size, resumed.swaps.length);
+
+    const settled = resumed.swaps.find((s) => s.mint === firstSend.mint);
+    assert.equal(settled.status, 'DONE');
+    assert.equal(settled.tx, firstSend.signature, 'it adopted the first attempt rather than re-quoting');
+    assert.equal(settled.receivedRaw, chain.fillFor(firstSend.mint).toString());
+    assert.equal(settled.quotedOut, intent.quotedOut, 'the published quote survived the adoption');
+    assert.equal(settled.beforeRaw, '0', 'measured against the balance from before the first attempt');
+  } finally {
+    await close();
+  }
+});
+
+test('runRound: a swap that confirmed after a timeout is adopted, never re-sent', async () => {
+  const { db, close } = await makeDb('adopt-timeout');
+  try {
+    // The first send lands, but the keeper's confirmation times out. Attempt 2
+    // must discover the fill instead of buying the same allocation twice.
+    const chain = makeSettlingChain({ script: [{ confirm: 'timeout', lands: true, visible: true }] });
+    const { cfg, rpc, jup, dist, universeService, holdersService, calls } = chain;
+
+    const round = await runRound({ cfg, db, rpc, jup, dist, vault: VAULT_KEY, universeService, holdersService });
+
+    assert.equal(round.status, 'DONE', round.error ?? '');
+    assert.equal(calls.sends.length, round.swaps.length, 'no allocation was sent twice');
+    assert.ok(calls.statusLookups > 0, 'the previous signature was reconciled before any retry');
+
+    const first = calls.sends[0];
+    const swap = round.swaps.find((s) => s.mint === first.mint);
+    assert.equal(swap.status, 'DONE');
+    assert.equal(swap.tx, first.signature);
+    // Measured from the balance taken before attempt ONE, so the fill is counted
+    // rather than stranded outside receivedRaw.
+    assert.equal(swap.receivedRaw, chain.fillFor(first.mint).toString());
+    assert.equal(BigInt(round.stats.solSpentLamports), sum(round.swaps, (s) => s.solLamports));
+  } finally {
+    await close();
+  }
+});
+
+test('runRound: a swap whose fate is unknown is recorded UNRESOLVED, and nothing is re-sent', async () => {
+  const { db, close } = await makeDb('unresolved');
+  try {
+    // Sent, never confirmed, and the cluster will not say whether it exists.
+    const chain = makeSettlingChain({ script: [{ confirm: 'timeout', lands: false, visible: false }] });
+    const { cfg, rpc, jup, dist, universeService, holdersService, calls } = chain;
+
+    const round = await runRound({ cfg, db, rpc, jup, dist, vault: VAULT_KEY, universeService, holdersService });
+
+    assert.equal(round.status, 'DONE', round.error ?? '');
+    const first = calls.sends[0];
+    const swap = round.swaps.find((s) => s.mint === first.mint);
+    assert.equal(swap.status, 'UNRESOLVED');
+    assert.equal(swap.tx, first.signature, 'the signature an operator has to settle is on the record');
+    assert.equal(swap.receivedRaw, null);
+    assert.match(swap.error, /unknown/i);
+
+    assert.equal(calls.sends.filter((s) => s.mint === first.mint).length, 1, 'an unknown fate never becomes a second send');
+    assert.equal(calls.sends.length, round.swaps.length);
+    assert.equal(round.stats.swapsUnresolved, 1);
+    assert.equal(round.stats.solUnresolvedLamports, swap.solLamports);
+    assert.ok(BigInt(round.stats.solSpentLamports) < sum(round.swaps, (s) => s.solLamports));
+    assert.equal(round.transfers.filter((t) => t.mint === first.mint).length, 0, 'nobody is paid in a stock we may not own');
+
+    // And a later run leaves it alone rather than gambling on it.
+    const sendsBefore = calls.sends.length;
+    const again = await runRound({ cfg, db, rpc, jup, dist, vault: VAULT_KEY, universeService, holdersService, roundId: round.id, retry: true });
+    assert.equal(again.swaps.find((s) => s.mint === first.mint).status, 'UNRESOLVED');
+    assert.equal(calls.sends.length, sendsBefore, 'a retry does not re-send an unresolved swap either');
+  } finally {
+    await close();
+  }
+});
+
+test('runRound: a swap that provably cannot land is retried, exactly once more', async () => {
+  const { db, close } = await makeDb('expired-retry');
+  try {
+    // An expired blockhash is the one honest "this can never land" signal, so a
+    // fresh attempt is safe — and is what the round should do.
+    const chain = makeSettlingChain({ script: [{ confirm: 'expired', lands: false, visible: false }] });
+    const { cfg, rpc, jup, dist, universeService, holdersService, calls } = chain;
+
+    const round = await runRound({ cfg, db, rpc, jup, dist, vault: VAULT_KEY, universeService, holdersService });
+
+    assert.equal(round.status, 'DONE', round.error ?? '');
+    const firstMint = calls.sends[0].mint;
+    assert.equal(calls.sends.filter((s) => s.mint === firstMint).length, 2, 'one dead attempt, one real one');
+    assert.equal(calls.sends.length, round.swaps.length + 1);
+
+    const swap = round.swaps.find((s) => s.mint === firstMint);
+    assert.equal(swap.status, 'DONE');
+    assert.equal(swap.tx, calls.sends[1].signature);
+    assert.equal(swap.receivedRaw, chain.fillFor(firstMint).toString());
+  } finally {
+    await close();
+  }
+});
+
+/* --------------------------------------------------------------- mode */
+
+test('runRound: a round created in DRY_RUN is never finished by a LIVE process', async () => {
+  const { db, close } = await makeDb('mode-dry-to-live');
+  try {
+    const chain = makeSettlingChain();
+    const { cfg, rpc, jup, dist, universeService, holdersService, calls } = chain;
+    assert.equal(cfg.mode, 'LIVE');
+
+    // A rehearsal that was interrupted halfway: quotes taken, nothing executed.
+    const stale = await db.createRound({
+      id: 'r_2026-09-07T06',
+      scheduledAt: '2026-09-07T06:00:00.000Z',
+      status: 'SWAPPING',
+      mode: 'DRY_RUN',
+      simulated: true,
+      poolLamports: '2000000000',
+      swaps: [{ mint: bySymbol('NVDAx'), symbol: 'NVDAx', solLamports: '2000000000', status: 'PENDING' }],
+    });
+
+    const round = await runRound({ cfg, db, rpc, jup, dist, vault: VAULT_KEY, universeService, holdersService });
+
+    const refused = await db.getRound(stale.id);
+    assert.equal(refused.status, 'FAILED');
+    assert.match(refused.error, /DRY_RUN/);
+    assert.match(refused.error, /LIVE/);
+    assert.deepEqual(refused.modeMismatch, { roundMode: 'DRY_RUN', processMode: 'LIVE' });
+    assert.equal(refused.swaps[0].status, 'PENDING', 'not one simulated allocation was executed');
+    assert.ok(
+      !calls.sends.some((s) => s.mint === bySymbol('NVDAx') && BigInt(2_000_000_000) === 0n),
+      'the stale allocation was never sent',
+    );
+
+    assert.notEqual(round.id, stale.id, 'a fresh round was opened instead');
+    assert.equal(round.mode, 'LIVE');
+    assert.equal(round.simulated, false);
+    assert.equal(round.status, 'DONE', round.error ?? '');
+  } finally {
+    await close();
+  }
+});
+
+test('runRound: a round created in LIVE is never finished by a DRY_RUN process', async () => {
+  const { db, close } = await makeDb('mode-live-to-dry');
+  try {
+    const cfg = makeCfg(); // DRY_RUN
+    const fakes = makeFakes();
+
+    // Real SOL already left the vault for this round.
+    const paid = await db.createRound({
+      id: 'r_2026-09-07T06',
+      scheduledAt: '2026-09-07T06:00:00.000Z',
+      status: 'SWAPPING',
+      mode: 'LIVE',
+      simulated: false,
+      poolLamports: '2000000000',
+      swaps: [{ mint: bySymbol('NVDAx'), symbol: 'NVDAx', solLamports: '2000000000', status: 'DONE', tx: 'realsig', receivedRaw: '2000000' }],
+    });
+
+    const round = await runRound({ cfg, db, ...fakes });
+
+    const refused = await db.getRound(paid.id);
+    assert.equal(refused.status, 'FAILED');
+    assert.match(refused.error, /LIVE/);
+    assert.match(refused.error, /DRY_RUN/);
+    assert.equal(refused.swaps[0].tx, 'realsig', 'the real swap is untouched');
+    assert.equal(refused.transfers.length, 0, 'no simulated transfer was written over real stock');
+    assert.notEqual(round.id, paid.id);
+    assert.equal(round.mode, 'DRY_RUN');
+
+    // An operator who asks for that round by name is told why, not quietly given
+    // a different one.
+    const asked = await runRound({ cfg, db, ...fakes, roundId: paid.id, retry: true });
+    assert.equal(asked.id, paid.id);
+    assert.equal(asked.status, 'FAILED');
+  } finally {
+    await close();
+  }
+});
+
+/* --------------------------------------------------------------- carry */
+
+test('runRound: a simulated round never reads or writes the live carry key', async () => {
+  const { db, close } = await makeDb('carry-modes');
+  try {
+    const cfg = makeCfg();
+    const realDust = [{ mint: bySymbol('NVDAx'), amountRaw: '123456789' }];
+    await db.setKV('carry', realDust);
+
+    const round = await runRound({ cfg, db, ...makeFakes() });
+
+    assert.equal(round.status, 'DONE', round.error ?? '');
+    assert.equal(round.simulated, true);
+    assert.deepEqual(round.carryIn, [], 'a rehearsal does not fold real dust into fictional allocations');
+    assert.deepEqual(await db.getKV('carry'), realDust, 'the live carry key is exactly as it was');
+    assert.deepEqual(await db.getKV('carry:sim'), round.carryOut);
+    assert.ok(round.carryOut.length > 0, 'and the rehearsal still carries its own dust somewhere');
+  } finally {
+    await close();
+  }
+});
+
+test('runRound: stock bought but not delivered carries over instead of being stranded', async () => {
+  const { db, close } = await makeDb('undelivered');
+  try {
+    const fakes = await makeLiveFakes({ failTransfers: 2 });
+    const { cfg, rpc, jup, dist, universeService, holdersService } = fakes;
+
+    const round = await runRound({ cfg, db, rpc, jup, dist, vault: VAULT_KEY, universeService, holdersService });
+
+    assert.equal(round.status, 'DONE');
+    const failed = round.transfers.filter((t) => t.status === 'FAILED');
+    assert.equal(failed.length, 2);
+
+    const carry = new Map(round.carryOut.map((c) => [c.mint, BigInt(c.amountRaw)]));
+    const undelivered = new Map(round.undelivered.map((c) => [c.mint, BigInt(c.amountRaw)]));
+    assert.ok(undelivered.size > 0);
+    for (const transfer of failed) {
+      assert.ok(undelivered.has(transfer.mint), 'the stock we could not deliver is recorded');
+      assert.ok(carry.get(transfer.mint) >= BigInt(transfer.amountRaw), 'and it is inside the carry-over');
+    }
+
+    // Conservation against reality: every token bought is either in a holder's
+    // wallet or in the carry. Nothing is outside both.
+    for (const swap of round.swaps) {
+      if (swap.status !== 'DONE') continue;
+      const delivered = sum(round.transfers.filter((t) => t.mint === swap.mint && t.status === 'DONE'), (t) => t.amountRaw);
+      assert.equal(delivered + (carry.get(swap.mint) ?? 0n), BigInt(swap.receivedRaw), `stranded tokens for ${swap.symbol}`);
+    }
+    assert.deepEqual(await db.getKV('carry'), round.carryOut, 'the next round starts from it');
+  } finally {
+    await close();
+  }
+});
+
+/* ---------------------------------------------------------------- rent */
+
+test('runRound: a round that cannot pay for its own token accounts is SKIPPED / rent_unfunded', async () => {
+  const { db, close } = await makeDb('rent');
+  try {
+    const cfg = makeCfg();
+    const fakes = makeFakes(); // 2.5 SOL in the vault, 2.45 SOL of pool
+    // 200 eligible holders on the default 5-stock basket = 1000 recipient
+    // accounts. At ~0.00207 SOL of rent each that is ~2.07 SOL against a 2.45
+    // SOL pool, which leaves less than the 0.5 SOL minimum.
+    const many = Array.from({ length: 200 }, () => ({ wallet: address(), balance: '2000000000000' }));
+    fakes.holdersService = {
+      async snapshot() {
+        return { takenAt: new Date().toISOString(), slot: 1, supply: '1000000000000000', holders: many, source: 'test-holders' };
+      },
+    };
+
+    const round = await runRound({ cfg, db, ...fakes });
+
+    assert.equal(round.status, 'SKIPPED');
+    assert.equal(round.skipReason, 'rent_unfunded');
+    assert.equal(round.snapshot.holders.length, 200, 'the snapshot is still published honestly');
+    assert.equal(fakes.calls.quote.length, 0, 'nothing is bought for a round that cannot deliver it');
+    assert.equal(round.transfers.length, 0);
+
+    // The ledger says where the SOL would have gone.
+    assert.equal(round.rentEstimate.accounts, 1000);
+    assert.equal(round.rentEstimate.rentLamports, (1000n * 2_074_080n).toString());
+    assert.equal(round.rentEstimate.source, 'constant');
+    assert.ok(BigInt(round.rentEstimate.totalLamports) > BigInt(cfg.minRoundPoolLamports));
+    assert.equal(round.poolLamports, round.rentEstimate.netPoolLamports);
+    assert.ok(BigInt(round.poolLamports) < BigInt(cfg.minRoundPoolLamports));
+  } finally {
+    await close();
+  }
+});
+
+test('runRound: the rent reserve is read from the RPC when it will answer', async () => {
+  const { db, close } = await makeDb('rent-rpc');
+  try {
+    const cfg = makeCfg();
+    const fakes = makeFakes();
+    const asked = [];
+    fakes.rpc.call = async (method, params) => {
+      asked.push([method, params]);
+      if (method === 'getMinimumBalanceForRentExemption') return 2_100_000;
+      throw new Error(`unexpected rpc call ${method}`);
+    };
+
+    const round = await runRound({ cfg, db, ...fakes });
+
+    assert.equal(round.status, 'DONE', round.error ?? '');
+    assert.deepEqual(asked, [['getMinimumBalanceForRentExemption', [170]]]);
+    assert.equal(round.rentEstimate.source, 'rpc');
+    assert.equal(round.rentEstimate.perAccountLamports, '2100000');
+    // No prefs in this store: 3 holders x the 5-stock default basket.
+    assert.equal(round.rentEstimate.accounts, 15);
+    assert.equal(round.rentEstimate.rentLamports, (15n * 2_100_000n).toString());
+    assert.equal(BigInt(round.poolLamports), 2_450_000_000n - BigInt(round.rentEstimate.totalLamports));
   } finally {
     await close();
   }

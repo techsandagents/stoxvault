@@ -14,7 +14,7 @@
 import * as api from '../api.js';
 import * as wallet from '../wallet.js';
 import { buildDonutArcs } from '../charts.js';
-import { fmtShare, fmtSol, fmtInt, fmtTokenAmount, monogram, DASH } from '../format.js';
+import { fmtShare, fmtSol, fmtInt, fmtTokenAmount, monogram, num, DASH } from '../format.js';
 import { toast } from './toast.js';
 
 const STEP = 5;
@@ -41,6 +41,100 @@ function samePicks(a, b) {
       .sort()
       .join('|');
   return key(a) === key(b);
+}
+
+/**
+ * Which pane `#basket-picks` is allowed to show.
+ *
+ * A failed `/api/universe` is neither an empty basket nor a ready one. Without a
+ * universe the page cannot say whether a pick is still in the top 20, so the
+ * error pane — and the retry button inside it — stays up instead of being
+ * overwritten by a verdict that was checked against nothing.
+ *
+ * @param {{universeFailed: boolean, pickCount: number}} arg
+ * @returns {'error'|'empty'|'ready'}
+ */
+export function picksPaneState({ universeFailed, pickCount }) {
+  if (universeFailed) return 'error';
+  return pickCount > 0 ? 'ready' : 'empty';
+}
+
+/**
+ * The engine's rules, mirrored (see engine/validate.js). Pure, so the same
+ * verdict can be asserted in a test without a DOM.
+ *
+ * `universeKnown` is the honest half: membership in the top 20 is only
+ * knowable when a universe actually loaded. With a failed fetch every mint
+ * would look delisted, which is a lie about the picks rather than a report
+ * about the price feed — so the check is skipped and the reason is said out
+ * loud instead.
+ *
+ * @returns {{ok: boolean, code: string|null, text: string, level: string, badMints: Set<string>, total: number}}
+ */
+export function validateBasket(list, { rules, index = null, universeKnown = true, universeFailed = false } = {}) {
+  const badMints = new Set();
+  const total = list.reduce((acc, p) => acc + (Number(p.pct) || 0), 0);
+  const inUniverse = (mint) => Boolean(index && typeof index.has === 'function' && index.has(mint));
+
+  if (list.length === 0) {
+    return {
+      ok: false,
+      code: 'count',
+      level: 'info',
+      text: `Add ${rules.minPicks} to ${rules.maxPicks} stocks to build a basket.`,
+      badMints,
+      total,
+    };
+  }
+  if (list.length < rules.minPicks || list.length > rules.maxPicks) {
+    return { ok: false, code: 'count', level: 'error', text: RULE_TEXT.count(rules), badMints, total };
+  }
+
+  const seen = new Set();
+  for (const pick of list) {
+    if (seen.has(pick.mint)) {
+      badMints.add(pick.mint);
+      return { ok: false, code: 'duplicate', level: 'error', text: RULE_TEXT.duplicate(), badMints, total };
+    }
+    seen.add(pick.mint);
+    if (universeKnown && !inUniverse(pick.mint)) {
+      badMints.add(pick.mint);
+      return { ok: false, code: 'not_in_universe', level: 'error', text: RULE_TEXT.not_in_universe(), badMints, total };
+    }
+    const pct = Number(pick.pct);
+    if (!Number.isInteger(pct) || pct < rules.minPct || pct > rules.maxPct) {
+      badMints.add(pick.mint);
+      return { ok: false, code: 'range', level: 'error', text: RULE_TEXT.range(rules), badMints, total };
+    }
+  }
+
+  if (total !== 100) {
+    const delta = 100 - total;
+    return {
+      ok: false,
+      code: 'sum',
+      level: 'warn',
+      text:
+        delta > 0
+          ? `${delta}% still to allocate. Auto-balance spreads it for you.`
+          : `${Math.abs(delta)}% over. Auto-balance takes it back off.`,
+      badMints,
+      total,
+    };
+  }
+
+  if (universeFailed) {
+    return {
+      ok: true,
+      code: null,
+      level: 'warn',
+      text: 'The top 20 did not load, so these picks could not be checked against it.',
+      badMints,
+      total,
+    };
+  }
+
+  return { ok: true, code: null, level: 'ok', text: `${list.length} stocks, 100% allocated.`, badMints, total };
 }
 
 export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock } = {}) {
@@ -114,62 +208,16 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
   let filter = '';
   let saving = false;
   let loadedUniverse = false;
+  let universeFailed = false; // /api/universe rejected: membership is unknowable
 
   /* ------------------------------------------------------------ validation */
 
+  /** True only when a universe was genuinely fetched and can be trusted. */
+  const universeKnown = () => loadedUniverse && !universeFailed;
+
   /** @returns {{ok: boolean, code: string|null, text: string, level: string, badMints: Set<string>}} */
   function validate(list = working) {
-    const badMints = new Set();
-    const total = list.reduce((acc, p) => acc + (Number(p.pct) || 0), 0);
-
-    if (list.length === 0) {
-      return {
-        ok: false,
-        code: 'count',
-        level: 'info',
-        text: `Add ${rules.minPicks} to ${rules.maxPicks} stocks to build a basket.`,
-        badMints,
-        total,
-      };
-    }
-    if (list.length < rules.minPicks || list.length > rules.maxPicks) {
-      return { ok: false, code: 'count', level: 'error', text: RULE_TEXT.count(rules), badMints, total };
-    }
-
-    const seen = new Set();
-    for (const pick of list) {
-      if (seen.has(pick.mint)) {
-        badMints.add(pick.mint);
-        return { ok: false, code: 'duplicate', level: 'error', text: RULE_TEXT.duplicate(), badMints, total };
-      }
-      seen.add(pick.mint);
-      if (!index.has(pick.mint)) {
-        badMints.add(pick.mint);
-        return { ok: false, code: 'not_in_universe', level: 'error', text: RULE_TEXT.not_in_universe(), badMints, total };
-      }
-      const pct = Number(pick.pct);
-      if (!Number.isInteger(pct) || pct < rules.minPct || pct > rules.maxPct) {
-        badMints.add(pick.mint);
-        return { ok: false, code: 'range', level: 'error', text: RULE_TEXT.range(rules), badMints, total };
-      }
-    }
-
-    if (total !== 100) {
-      const delta = 100 - total;
-      return {
-        ok: false,
-        code: 'sum',
-        level: 'warn',
-        text:
-          delta > 0
-            ? `${delta}% still to allocate. Auto-balance spreads it for you.`
-            : `${Math.abs(delta)}% over. Auto-balance takes it back off.`,
-        badMints,
-        total,
-      };
-    }
-
-    return { ok: true, code: null, level: 'ok', text: `${list.length} stocks, 100% allocated.`, badMints, total };
+    return validateBasket(list, { rules, index, universeKnown: universeKnown(), universeFailed });
   }
 
   /* -------------------------------------------------------- basket edits -- */
@@ -270,7 +318,8 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
     node.dataset.symbol = symbol;
 
     node.querySelector('[data-field="symbol"]').textContent = symbol;
-    node.querySelector('[data-field="name"]').textContent = stock?.name || (index.has(pick.mint) ? '' : 'not in the current top 20');
+    const delisted = universeKnown() && !index.has(pick.mint);
+    node.querySelector('[data-field="name"]').textContent = stock?.name || (delisted ? 'not in the current top 20' : '');
 
     const mono = node.querySelector('[data-field="mono"]');
     const img = node.querySelector('[data-field="logo"]');
@@ -310,8 +359,10 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
     }
 
     // A saved pick whose stock fell out of the top 20 still counts — the engine
-    // re-spreads its share — so say that instead of silently dropping it.
-    if (!index.has(pick.mint)) {
+    // re-spreads its share — so say that instead of silently dropping it. Only
+    // ever said when a universe actually loaded: an unreachable price feed is
+    // not evidence that anything was delisted.
+    if (delisted) {
       node.classList.add('is-stale');
       const note = document.createElement('span');
       note.className = 'pick-row__note';
@@ -324,7 +375,14 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
   }
 
   function renderPicks(state) {
-    if (working.length === 0) {
+    const pane = picksPaneState({ universeFailed, pickCount: working.length });
+    if (pane === 'error') {
+      // Leave the error pane and its retry button exactly where setError put
+      // them. Nothing is rendered against a universe that never arrived.
+      picksState.dataset.state = 'error';
+      return;
+    }
+    if (pane === 'empty') {
       picksList.replaceChildren();
       picksState.dataset.state = 'empty';
       return;
@@ -373,6 +431,11 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
 
   function renderPicker() {
     if (!addList || !chipTpl || !picker) return;
+    if (universeFailed) {
+      if (addCount) addCount.textContent = DASH;
+      picker.dataset.state = 'error';
+      return;
+    }
     const taken = new Set(working.map((p) => p.mint));
     const needle = filter.trim().toLowerCase();
 
@@ -739,9 +802,22 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
   if (projConnectBtn && typeof onConnect === 'function') projConnectBtn.addEventListener('click', () => onConnect());
   if (retryBtn) {
     retryBtn.addEventListener('click', () => {
+      if (typeof onRetry !== 'function') {
+        render(); // nothing to refetch: the honest error pane stays up
+        return;
+      }
       picksState.dataset.state = 'loading';
-      if (typeof onRetry === 'function') onRetry();
-      else render();
+      if (picker) picker.dataset.state = 'loading';
+      // If the retry did not bring a universe back, return to the error pane
+      // rather than leaving a skeleton spinning forever.
+      Promise.resolve(onRetry()).then(
+        () => {
+          if (universeFailed) render();
+        },
+        () => {
+          if (universeFailed) render();
+        },
+      );
     });
   }
 
@@ -758,7 +834,9 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
           maxPct: Number(config.rules.maxPct) || DEFAULT_RULES.maxPct,
           universeSize: Number(config.rules.universeSize) || DEFAULT_RULES.universeSize,
           defaultBasketSize: Number(config.rules.defaultBasketSize) || DEFAULT_RULES.defaultBasketSize,
-          eligibleBps: Number(config.rules.eligibleBps),
+          // num(), not Number(): a missing eligibleBps must stay null, not
+          // become 0 and claim every wallet on earth is eligible.
+          eligibleBps: num(config.rules.eligibleBps),
         };
       }
       if (config?.mode) mode = config.mode;
@@ -770,11 +848,14 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
       set('rule-picks-range', `${rules.minPicks} and ${rules.maxPicks}`);
       set('rule-pct-range', `${rules.minPct}–${rules.maxPct}%`);
       set('rule-universe-size', String(rules.universeSize));
+      // Number.isFinite does not coerce, so null (unknown) and undefined (never
+      // sent) both fall through instead of printing "0%" or "NaN%".
       if (Number.isFinite(rules.eligibleBps)) {
         set('rule-eligible-pct', `${rules.eligibleBps / 100}%`);
         set('step-eligible-pct', `${rules.eligibleBps / 100}%`);
       }
-      if (Number.isFinite(Number(config?.intervalHours))) set('step-interval', String(config.intervalHours));
+      const intervalHours = num(config?.intervalHours);
+      if (intervalHours !== null) set('step-interval', String(intervalHours));
 
       refreshSummary();
     },
@@ -784,6 +865,7 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
       universe = Array.isArray(uni?.stocks) ? uni.stocks : [];
       index = new Map(universe.map((s) => [s.mint, s]));
       loadedUniverse = universe.length > 0;
+      universeFailed = false;
 
       const topN = universe.slice(0, rules.defaultBasketSize).map((s) => s.mint);
       defaultBasket = evenSplit(topN);
@@ -813,7 +895,10 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
 
     /** The pool figure shown in the projection panel comes from /api/vault. */
     setPool(sol) {
-      poolSol = Number.isFinite(Number(sol)) ? Number(sol) : null;
+      // num() and not Number(): Number(null) is 0, which would turn an
+      // unreadable vault balance into a claim that the pool is empty, while the
+      // Vault panel right below prints an em dash for the same figure.
+      poolSol = num(sol);
       if (connected) renderProjection();
     },
 
@@ -844,14 +929,18 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
     },
 
     setLoading() {
+      universeFailed = false;
       picksState.dataset.state = 'loading';
       if (picker) picker.dataset.state = 'loading';
     },
 
+    /** The universe fetch failed. Nothing may be validated against it until it lands. */
     setError(message) {
+      universeFailed = true;
       if (errorText && message) errorText.textContent = message;
       picksState.dataset.state = 'error';
       if (picker) picker.dataset.state = 'error';
+      refreshSummary();
     },
 
     addStock: addMint,

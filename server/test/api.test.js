@@ -24,7 +24,7 @@ const { buildConfig } = await import('../src/config.js');
 const { openDb } = await import('../src/db/index.js');
 const { createApp } = await import('../src/index.js');
 const { b58encode, b58decode, buildSignInMessage } = await import('../src/services/session.js');
-const { createHoldersService, aggregate, parseAccountSlice } = await import('../src/services/holders.js');
+const { createHoldersService, aggregate, parseAccountSlice, tokenAccountsByOwnerParams } = await import('../src/services/holders.js');
 
 const VAULT_ADDRESS = '769fv6KK6SAQ5FBAXdUZLdrppdHn5CqqgJBpFCLyf9up';
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -373,7 +373,14 @@ test('GET /api/stats and /api/vault before launch', async (t) => {
   assert.equal(stats.json.prefHolders, 0);
   assert.equal(stats.json.demandBasis, 'equal-weight');
   assert.deepEqual(stats.json.demand, [], 'nobody has saved picks yet, so demand is empty, not invented');
-  assert.deepEqual(stats.json.rounds, { count: 0, totalSolDistributed: 0, lastAt: null });
+  assert.deepEqual(stats.json.rounds, {
+    count: 0,
+    totalSolDistributed: 0,
+    distributedRounds: 0,
+    lastAt: null,
+    lastDistributedAt: null,
+    simulated: { rounds: 0, totalSol: 0, totalLamports: '0' },
+  });
   assert.equal(stats.json.vault.balanceSol, 2.5);
   assert.equal(stats.json.vault.balanceUsd, 500);
   assert.equal(stats.json.solPriceUsd, 200);
@@ -1003,4 +1010,192 @@ test('with a token mint, /api/me, /api/stats and /preview switch to real holder 
   assert.ok(spent <= 2_450_000_000n, 'a round never plans to spend more than the pool');
   assert.ok(spent > 2_449_999_000n, 'and it plans to spend nearly all of it');
   assert.equal(preview.json.simulated, true, 'a preview is always a simulation');
+});
+
+/* ------------------------------------------------------------ regressions */
+
+test('balanceOf asks getTokenAccountsByOwner with exactly one filter key', async () => {
+  const holder = newWallet().address;
+
+  // The filter is an externally-tagged enum. Verified live against
+  // api.mainnet-beta.solana.com: {mint, programId} together answers
+  //   -32602 "Invalid parameter: invalid value: map, expected map with a single key"
+  // while {mint} alone answers a real account list. Encode that in the shape.
+  const params = tokenAccountsByOwnerParams(holder, MEME_MINT);
+  assert.equal(params[0], holder);
+  assert.deepEqual(Object.keys(params[1]), ['mint'], 'exactly one key, and it is the mint');
+  assert.equal(params[1].mint, MEME_MINT);
+  assert.equal(params[1].programId, undefined, 'programId must never travel with mint');
+  assert.deepEqual(params[2], { encoding: 'jsonParsed', commitment: 'confirmed' });
+
+  // And the service actually sends that shape. This RPC stub behaves like the
+  // real node: a multi-key filter is a hard error, not an empty result.
+  const seen = [];
+  const service = createHoldersService({
+    cfg: buildConfig({ TOKEN_MINT: MEME_MINT }),
+    deps: {
+      rpc: {
+        async call(method, callParams) {
+          assert.equal(method, 'getTokenAccountsByOwner');
+          seen.push(callParams);
+          const filter = callParams[1];
+          if (Object.keys(filter).length !== 1) {
+            throw new Error('getTokenAccountsByOwner: Invalid parameter: invalid value: map, expected map with a single key');
+          }
+          assert.equal(filter.mint, MEME_MINT);
+          return {
+            value: [
+              { account: { data: { parsed: { info: { tokenAmount: { amount: '50000000000000' } } } } } },
+              { account: { data: { parsed: { info: { tokenAmount: { amount: '1000000' } } } } } },
+            ],
+          };
+        },
+      },
+    },
+  });
+
+  const balance = await service.balanceOf(holder);
+  assert.notEqual(balance, null, 'a wallet holding 5% of supply is never told its balance is unreadable');
+  assert.equal(balance.raw, '50000001000000', 'both token accounts are summed');
+  assert.equal(balance.accounts, 2);
+  assert.equal(seen.length, 1, 'one call is enough: filtering by mint covers both token programs');
+  assert.deepEqual(Object.keys(seen[0][1]), ['mint']);
+});
+
+/** A round document as the keeper writes one, with per-holder rows everywhere. */
+function heavyRound(id, { simulated, status, solSpentLamports, holders = 200, createdAt }) {
+  const rows = Array.from({ length: holders }, (_, i) => ({
+    wallet: `Holder${String(i).padStart(40, '0')}`,
+    balance: String(1_000_000_000_000 + i),
+  }));
+  return {
+    id,
+    createdAt,
+    scheduledAt: createdAt,
+    startedAt: createdAt,
+    finishedAt: createdAt,
+    status,
+    simulated,
+    skipReason: null,
+    poolLamports: '2450000000',
+    reserveLamports: '50000000',
+    top5: [NVDA, AAPL, GOOGL, MSFT, AMZN],
+    universe: Array.from({ length: 20 }, (_, n) => ({ mint: `Mint${n}`, symbol: `S${n}`, rank: n + 1 })),
+    snapshot: { takenAt: createdAt, slot: 1, tokenMint: MEME_MINT, hash: `h_${id}`, holders: rows },
+    demand: [{ mint: NVDA, symbol: 'NVDAx', weight: '1', shareBps: 10000, solLamports: solSpentLamports }],
+    swaps: [{ mint: NVDA, symbol: 'NVDAx', solLamports: solSpentLamports, quotedOut: '1', receivedRaw: '1', tx: null, status: 'DONE', error: null }],
+    plan: {
+      totalWeight: '1',
+      spentLamports: solSpentLamports,
+      remainderLamports: '0',
+      holders: rows.map((r) => ({ wallet: r.wallet, balance: r.balance, source: 'default', picks: [{ mint: NVDA, pct: 100 }] })),
+    },
+    transfers: rows.map((r) => ({ wallet: r.wallet, mint: NVDA, symbol: 'NVDAx', amountRaw: '10', tx: null, status: 'DONE', error: null })),
+    carryIn: [],
+    carryOut: [],
+    stats: { eligibleHolders: rows.length, transfersDone: rows.length, transfersFailed: 0, solSpentLamports },
+    error: null,
+  };
+}
+
+const iso = (hour) => new Date(Date.UTC(2026, 8, 6, hour)).toISOString();
+
+test('simulated, failed and skipped rounds contribute zero SOL to the public total', async (t) => {
+  const s = await makeServer();
+  t.after(() => s.close());
+
+  // Four pre-launch dry runs: real Jupiter quotes, no swap, no transfer, and
+  // solSpentLamports set to the whole pool because every simulated swap is DONE.
+  for (let i = 0; i < 4; i++) {
+    await s.db.createRound(heavyRound(`r_sim_${i}`, { simulated: true, status: 'DONE', solSpentLamports: '3950000000', createdAt: iso(i) }));
+  }
+  await s.db.createRound(heavyRound('r_failed', { simulated: false, status: 'FAILED', solSpentLamports: '1000000000', createdAt: iso(5) }));
+  await s.db.createRound({ ...heavyRound('r_skipped', { simulated: false, status: 'SKIPPED', solSpentLamports: '0', createdAt: iso(6) }), skipReason: 'no_token' });
+
+  const dryOnly = await get(s.port, '/api/stats');
+  assert.equal(dryOnly.status, 200, dryOnly.text);
+  assert.equal(dryOnly.json.rounds.count, 6, 'every round is still published');
+  assert.equal(dryOnly.json.rounds.totalSolDistributed, 0, '15.8 simulated SOL is not 15.8 SOL distributed');
+  assert.equal(dryOnly.json.rounds.distributedRounds, 0);
+  assert.equal(dryOnly.json.rounds.lastDistributedAt, null);
+  assert.equal(dryOnly.json.rounds.simulated.rounds, 4, 'the dry runs are reported, separately and labelled');
+  assert.equal(dryOnly.json.rounds.simulated.totalSol, 15.8);
+  assert.equal(dryOnly.json.rounds.simulated.totalLamports, '15800000000');
+
+  // Go-live: one real round that really swapped and really sent.
+  await s.db.createRound(heavyRound('r_real', { simulated: false, status: 'DONE', solSpentLamports: '2400000000', createdAt: iso(7) }));
+  const live = await get(s.port, '/api/stats');
+  assert.equal(live.json.rounds.totalSolDistributed, 2.4, 'only the real round counts');
+  assert.equal(live.json.rounds.distributedRounds, 1);
+  assert.equal(live.json.rounds.lastDistributedAt, iso(7));
+  assert.equal(live.json.rounds.simulated.totalSol, 15.8, 'the dry-run figure never leaks into the headline');
+  assert.equal(live.json.rounds.count, 7);
+
+  // Repeating the call must not double-count anything: the aggregate is a
+  // running total, not a re-scan.
+  const again = await get(s.port, '/api/stats');
+  assert.equal(again.json.rounds.totalSolDistributed, 2.4);
+  assert.equal(again.json.rounds.simulated.totalSol, 15.8);
+  assert.equal(again.json.rounds.distributedRounds, 1);
+  assert.equal(again.json.rounds.simulated.rounds, 4);
+});
+
+test('a round that finishes after being counted as open is folded exactly once', async (t) => {
+  const s = await makeServer();
+  t.after(() => s.close());
+
+  await s.db.createRound({ ...heavyRound('r_open', { simulated: false, status: 'SWAPPING', solSpentLamports: '0', createdAt: iso(1) }), finishedAt: null });
+  const open = await get(s.port, '/api/stats');
+  assert.equal(open.json.rounds.totalSolDistributed, 0, 'a round in flight has distributed nothing yet');
+  assert.equal(open.json.rounds.count, 1);
+
+  await s.db.updateRound('r_open', { status: 'DONE', finishedAt: iso(2), stats: { solSpentLamports: '1500000000' } });
+  const done = await get(s.port, '/api/stats');
+  assert.equal(done.json.rounds.totalSolDistributed, 1.5);
+  assert.equal(done.json.rounds.distributedRounds, 1);
+
+  const repeat = await get(s.port, '/api/stats');
+  assert.equal(repeat.json.rounds.totalSolDistributed, 1.5, 'counted once, not once per request');
+  assert.equal(repeat.json.rounds.distributedRounds, 1);
+});
+
+test('GET /api/rounds carries no per-holder rows, while GET /api/rounds/:id is complete', async (t) => {
+  const s = await makeServer();
+  t.after(() => s.close());
+
+  await s.db.createRound(heavyRound('r_list', { simulated: true, status: 'DONE', solSpentLamports: '2450000000', holders: 1000, createdAt: iso(3) }));
+
+  const list = await get(s.port, '/api/rounds');
+  assert.equal(list.status, 200, list.text);
+  assert.equal(list.json.items.length, 1);
+  const item = list.json.items[0];
+
+  assert.equal(item.transfers, undefined, 'no per-(wallet, mint) transfer rows');
+  assert.equal(item.universe, undefined);
+  assert.equal(item.snapshot.holders, undefined, 'no per-holder snapshot rows');
+  assert.equal(item.plan.holders, undefined, 'no per-holder plan rows either — this is what OOMed /api/stats');
+  assert.equal(item.plan.eligible, undefined);
+  assert.equal(item.plan.contributorsByMint, undefined);
+
+  // The counts survive, so the ledger page still says how big the round was.
+  assert.equal(item.snapshot.holderCount, 1000);
+  assert.equal(item.plan.holderCount, 1000);
+  assert.equal(item.transferCount, 1000);
+  assert.equal(item.universeSize, 20);
+  assert.equal(item.plan.totalWeight, '1', 'the cheap scalars stay');
+  assert.equal(item.stats.eligibleHolders, 1000);
+  assert.equal(item.simulated, true);
+
+  // No wallet address may appear anywhere in a list response.
+  const text = JSON.stringify(list.json);
+  assert.equal(text.includes('Holder0000'), false, 'not one holder address leaks into the list');
+  assert.ok(text.length < 8_000, `a 1,000-holder round summarises small, got ${text.length} bytes`);
+
+  // The full document is still served whole, so a round stays reproducible.
+  const full = await get(s.port, '/api/rounds/r_list');
+  assert.equal(full.status, 200, full.text);
+  assert.equal(full.json.snapshot.holders.length, 1000);
+  assert.equal(full.json.plan.holders.length, 1000);
+  assert.equal(full.json.transfers.length, 1000);
+  assert.equal(full.json.universe.length, 20);
 });

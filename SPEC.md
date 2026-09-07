@@ -65,7 +65,8 @@ Every 6h it runs the round algorithm below. Every step is logged and every tx ha
               eligible_total = sum of remaining balances
               share[h] = balance[h] / eligible_total
 4. PREFS      freeze prefs table as of round start (changes after this apply next round)
-              for holders with no prefs: weights = 20% each on TOP5 (by mcap, refreshed now)
+              for holders with no prefs: the configured DEFAULT_BASKET (currently SPCXx 100%),
+              else 20% each on TOP5 (by mcap, refreshed now)
               for holders with prefs whose pick is no longer tradeable: that pick's % is
               redistributed proportionally across their remaining picks
 5. DEMAND     for each stock s: D[s] = sum over h of share[h] * w[h][s]      (sums to 1.0)
@@ -86,7 +87,8 @@ Every 6h it runs the round algorithm below. Every step is logged and every tx ha
 ### Worked example
 Pool 10 SOL. Two eligible holders.
 - Alice: 3M tokens, prefs TSLAx 60 / NVDAx 40
-- Bob: 1M tokens, no prefs -> 20% each of TOP5 (say NVDAx, AAPLx, MSFTx, GOOGLx, AMZNx)
+- Bob: 1M tokens, no prefs -> the default basket (this example predates DEFAULT_BASKET and assumes
+  the blank setting: 20% each of TOP5, say NVDAx, AAPLx, MSFTx, GOOGLx, AMZNx)
 
 share: Alice 0.75, Bob 0.25.
 Demand: TSLAx 0.45, NVDAx 0.30+0.05=0.35, AAPLx 0.05, MSFTx 0.05, GOOGLx 0.05, AMZNx 0.05.
@@ -131,7 +133,7 @@ NVDAx received (say 1.75 tokens): Alice gets 1.75 × 0.30/0.35 = 1.5, Bob gets 0
 | Topic | Decision |
 |---|---|
 | Stock universe | **Top 20 xStocks** ranked by underlying company market cap (Jupiter price API `stockData.mcap`), filtered to on-chain liquidity >= $50k on Jupiter. Users pick only from these 20. Re-ranked every round and recorded in the ledger. |
-| Default basket | Top 5 of that ranked 20, 20% each. |
+| Default basket | Set by `DEFAULT_BASKET` (e.g. `SPCXx:100`). Currently **100% SpaceX**. Blank = top 5 at 20% each. Resolved against the live universe each round, so a ticker that drops out is not bought; if none of the configured tickers survive, it falls back to the top 5. |
 | Vault | A dedicated Solana wallet (keypair generated locally, secret only in `.env` / Railway env). Founder sends SOL to the vault address. Every 6h the keeper swaps the vault's SOL into stocks and distributes. No pump.fun claim step; vault balance IS the pool. Vault address shown on the site. |
 | Coin name / CA | Blank until launch (`TOKEN_NAME`, `TOKEN_SYMBOL`, `TOKEN_MINT` env). Site shows "TBA" states honestly. |
 | Exclusion list | No dev address needed; `EXCLUDED_WALLETS` env (comma list) for LP / bonding curve / vault, filled at launch. |

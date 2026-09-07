@@ -242,6 +242,34 @@ function renderFooterApi() {
 
 /* ------------------------------------------------------------ token panel -- */
 
+/**
+ * Fill every `[data-default-basket]` span with what a holder who never picks
+ * actually receives, as the server resolved it.
+ *
+ * The markup ships with the top-five wording so the page reads correctly before
+ * any request lands, but the operator can change the default basket by config,
+ * and copy that says "the top five" while the keeper buys something else would
+ * be a lie in the one place the reader has no way to check. So the page states
+ * what the server reports, not what was true when the HTML was written.
+ */
+function renderDefaultBasket(config) {
+  const spans = document.querySelectorAll('[data-default-basket]');
+  if (!spans.length) return;
+  const info = config?.defaultBasket;
+  const picks = Array.isArray(info?.picks) ? info.picks.filter((p) => p && p.symbol) : [];
+  if (!picks.length) return; // leave the shipped wording rather than guess
+
+  let text;
+  if (picks.length === 1) {
+    text = `100% ${picks[0].symbol}`;
+  } else if (picks.every((p) => p.pct === picks[0].pct)) {
+    text = `${picks.map((p) => p.symbol).join(', ')} — ${picks[0].pct}% each`;
+  } else {
+    text = picks.map((p) => `${p.symbol} ${p.pct}%`).join(', ');
+  }
+  for (const span of spans) span.textContent = text;
+}
+
 function renderToken(config) {
   const token = config?.token || null;
   const nameEl = document.getElementById('token-name');
@@ -339,6 +367,7 @@ async function loadConfig({ toastOnError = false } = {}) {
     state.config = config;
     setMode(config.mode);
     renderToken(config);
+    renderDefaultBasket(config);
     basket.renderConfig(config);
     vault.renderConfig(config);
     rounds.renderConfig(config);

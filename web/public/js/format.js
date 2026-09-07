@@ -189,12 +189,49 @@ export function baseUnitsToNumber(raw, decimals = 0) {
 }
 
 /**
+ * Apply an xStock's Token-2022 scaledUiAmount multiplier to a raw base-unit
+ * amount, in exact integer arithmetic.
+ *
+ * A wallet displays `rawAmount * multiplier`, and Backed raises the multiplier
+ * as the position accrues, so a page that ignores it shows a smaller number
+ * than the holder's own wallet does for the same tokens. Verified live on
+ * 2026-09-07: NVDAx 1.000103090792305, AAPLx 1.0026642075893797, TSLAx exactly 1.
+ *
+ * The multiplier arrives as a JSON number, so it is converted to an exact
+ * integer ratio (mantissa / 10^dp) and applied with BigInt. Raw base units stay
+ * the truth for every transfer and every allocation; this is display only.
+ */
+export function applyUiMultiplier(raw, multiplier) {
+  const s = toRawString(raw);
+  if (s === null) return null;
+  const m = num(multiplier);
+  if (m === null || m === 1 || m <= 0) return s;
+
+  // "1.000103090792305" -> mantissa 1000103090792305, dp 15. Exponent notation
+  // is normalised away first so a value like 1e-7 cannot corrupt the split.
+  const text = m.toFixed(20).replace(/0+$/, '');
+  const [whole, frac = ''] = text.split('.');
+  const dp = frac.length;
+  const mantissa = BigInt(whole + frac);
+  const scale = 10n ** BigInt(dp);
+  const negative = s.startsWith('-');
+  const magnitude = BigInt(negative ? s.slice(1) : s);
+  // Floor, matching how the token program itself truncates.
+  const scaled = (magnitude * mantissa) / scale;
+  return `${negative ? '-' : ''}${scaled.toString()}`;
+}
+
+/**
  * Render a token amount for a table cell: thousands separators on the whole
  * part, at most `maxDecimals` significant decimals, trailing zeros trimmed, and
  * a `0.00000001`-style floor so a dust amount never renders as a bare `0`.
+ *
+ * Pass `uiMultiplier` (from the stock's `uiMultiplier` field) for any xStock
+ * amount, so the figure matches what the holder sees in their wallet.
  */
-export function fmtTokenAmount(raw, decimals = 0, { maxDecimals = 6 } = {}) {
-  const exact = baseUnitsToString(raw, decimals);
+export function fmtTokenAmount(raw, decimals = 0, { maxDecimals = 6, uiMultiplier = 1 } = {}) {
+  const scaled = applyUiMultiplier(raw, uiMultiplier);
+  const exact = baseUnitsToString(scaled === null ? raw : scaled, decimals);
   if (exact === null) return DASH;
   const negative = exact.startsWith('-');
   const body = negative ? exact.slice(1) : exact;
@@ -211,11 +248,19 @@ export function fmtTokenAmount(raw, decimals = 0, { maxDecimals = 6 } = {}) {
 }
 
 /** The full-precision amount, for the `title` attribute. */
-export function fmtTokenAmountExact(raw, decimals = 0, symbol = '') {
-  const exact = baseUnitsToString(raw, decimals);
-  if (exact === null) return '';
+export function fmtTokenAmountExact(raw, decimals = 0, symbol = '', uiMultiplier = 1) {
   const s = toRawString(raw);
-  return `${exact}${symbol ? ` ${symbol}` : ''} (${s} base units, ${decimals} decimals)`;
+  if (s === null) return '';
+  const scaled = applyUiMultiplier(raw, uiMultiplier);
+  const exact = baseUnitsToString(scaled === null ? raw : scaled, decimals);
+  if (exact === null) return '';
+  const base = `${exact}${symbol ? ` ${symbol}` : ''} (${s} base units, ${decimals} decimals`;
+  const m = num(uiMultiplier);
+  // Say so when the displayed figure is not simply raw / 10^decimals, so the
+  // number can still be reconciled against the ledger by hand.
+  return m !== null && m !== 1
+    ? `${base}, scaled by ${m})`
+    : `${base})`;
 }
 
 /* ---------------------------------------------------------------- address -- */

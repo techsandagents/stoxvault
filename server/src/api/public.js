@@ -10,6 +10,7 @@
 import express from 'express';
 import { fail, wrap, requireWallet, requireSymbol, parsePaging, notFound, badRequest } from './router.js';
 import { normalizeRange } from '../services/history.js';
+import { defaultPicks } from '../engine/index.js';
 
 const CARRY_KV_KEY = 'carry';
 
@@ -87,9 +88,41 @@ export function createPublicRouter({ cfg, db, services }) {
         intervalHours: cfg.intervalHours,
         nextRoundAt: cfg.nextRoundAtIso(),
         excluded: cfg.excluded,
+        // What a holder who never set preferences actually receives, resolved
+        // against the live universe. The site renders this rather than hard-coding
+        // "the top five", so the page cannot drift from what the keeper will buy
+        // when the operator changes DEFAULT_BASKET.
+        defaultBasket: await describeDefaultBasket(),
       });
     }),
   );
+
+  async function describeDefaultBasket() {
+    let picks = [];
+    let resolved = true;
+    try {
+      const doc = await universe.get();
+      picks = defaultPicks(doc.stocks, cfg.rules).map((p) => ({ mint: p.mint, symbol: p.symbol, pct: p.pct }));
+    } catch (err) {
+      // The universe is how a ticker becomes a mint. Without it, say so rather
+      // than guessing a basket.
+      resolved = false;
+    }
+    return {
+      configured: cfg.rules.defaultBasket ?? null,
+      configuredValid: cfg.defaultBasketValid !== false,
+      // true when the configured tickers were found and used; false when this is
+      // the top-N fallback (nothing configured, or nothing configured survived).
+      fromConfig: Boolean(
+        cfg.rules.defaultBasket
+        && picks.length > 0
+        && picks.length === String(cfg.rules.defaultBasket).split(',').filter(Boolean).length,
+      ),
+      basketSize: cfg.defaultBasketSize,
+      picks,
+      resolved,
+    };
+  }
 
   router.get(
     '/universe',

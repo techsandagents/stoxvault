@@ -67,9 +67,13 @@ export function createVault({ onRetry } = {}) {
     }
 
     const decimals = Number.isInteger(holding.decimals) ? holding.decimals : Number.isInteger(stock?.decimals) ? stock.decimals : 8;
+    // Token-2022 scaledUiAmount: a wallet shows rawAmount * multiplier, so the
+    // carry-over figure here must scale too or it will read low against Solscan.
+    const rawMultiplier = Number(holding.uiMultiplier ?? stock?.uiMultiplier);
+    const uiMultiplier = Number.isFinite(rawMultiplier) && rawMultiplier > 0 ? rawMultiplier : 1;
     const amountCell = node.querySelector('[data-field="amount"]');
-    amountCell.textContent = fmtTokenAmount(holding.amountRaw, decimals);
-    amountCell.title = fmtTokenAmountExact(holding.amountRaw, decimals, symbol || '');
+    amountCell.textContent = fmtTokenAmount(holding.amountRaw, decimals, { uiMultiplier });
+    amountCell.title = fmtTokenAmountExact(holding.amountRaw, decimals, symbol || '', uiMultiplier);
 
     const mintCell = node.querySelector('[data-field="mint"]');
     mintCell.textContent = truncAddr(holding.mint);

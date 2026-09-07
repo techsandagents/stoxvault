@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Keypair } from '@solana/web3.js';
+import { Keypair, VersionedTransaction } from '@solana/web3.js';
 
 import { createRpc, RpcError, TOKEN_2022_PROGRAM_ID as RPC_TOKEN_2022 } from '../src/chain/rpc.js';
 import {
@@ -451,10 +451,21 @@ test('jupiter: the real seed file on disk parses and holds the top-20 names', as
 
 /* ----------------------------------------------------------- distributor */
 
+/** The signature a node would report for bytes we sent: the tx's own first signature. */
+function sigOf(raw) {
+  return b58encode(VersionedTransaction.deserialize(raw).signatures[0]);
+}
+
+/** A plausible 64-byte transaction signature, as a previous run would have stored it. */
+const fakeSignature = () => b58encode(Keypair.generate().secretKey);
+
+/** A status object the cluster returns for a transaction that landed cleanly. */
+const FINALIZED = { slot: 7, confirmations: null, confirmationStatus: 'finalized', err: null };
+
 function distFakes({ mode = 'LIVE', confirm = () => ({ status: 'confirmed' }), statuses = () => [null] } = {}) {
   const balances = new Map();
   const sends = [];
-  const blockhash = Keypair.generate().publicKey.toBase58();
+  const blockhashes = [];
   const state = { deliverOnSend: null };
 
   const rpc = {
@@ -465,12 +476,17 @@ function distFakes({ mode = 'LIVE', confirm = () => ({ status: 'confirmed' }), s
       return balances.get(owner) ?? 0n;
     },
     async getLatestBlockhash() {
+      // A retry always builds on a fresh blockhash, so it is a different
+      // transaction with a different signature — as on a real cluster.
+      const blockhash = Keypair.generate().publicKey.toBase58();
+      blockhashes.push(blockhash);
       return { blockhash, lastValidBlockHeight: 1000 };
     },
     async sendRawTransaction(raw) {
       sends.push(raw);
-      if (state.deliverOnSend) state.deliverOnSend();
-      return `signature${sends.length}`;
+      const signature = sigOf(raw);
+      if (state.deliverOnSend) state.deliverOnSend(signature, raw);
+      return signature;
     },
     async confirmSignature(signature) {
       const result = confirm(sends.length, signature);
@@ -483,7 +499,7 @@ function distFakes({ mode = 'LIVE', confirm = () => ({ status: 'confirmed' }), s
 
   const cfg = { mode, priorityFeeLamports: 200000, vaultAddress: null };
   const dist = createDistributor({ cfg, rpc, sleep: noSleep });
-  return { cfg, rpc, dist, balances, sends, state };
+  return { cfg, rpc, dist, balances, sends, blockhashes, state };
 }
 
 test('distributor: compute budget maths', () => {
@@ -539,13 +555,12 @@ test('distributor: sends one batch, marks every transfer DONE with the signature
   assert.equal(results.length, 3);
   for (const row of results) {
     assert.equal(row.status, 'DONE');
-    assert.equal(row.tx, 'signature1');
+    assert.equal(row.tx, sigOf(sends[0]), 'the published tx is the signature of the transaction we sent');
     assert.equal(row.mint, mint);
   }
   assert.deepEqual(batches, [3]);
 
   // The bytes we produced are a real, signed v0 transaction.
-  const { VersionedTransaction } = await import('@solana/web3.js');
   const tx = VersionedTransaction.deserialize(sends[0]);
   assert.equal(tx.signatures.length, 1);
   assert.equal(tx.message.version, 0);
@@ -580,11 +595,170 @@ test('distributor: a bad recipient address fails alone and does not poison the b
   assert.equal(sends.length, 1);
 });
 
-test('distributor: never double-sends a transfer that already landed', async () => {
-  // The first attempt actually lands, but we never see the confirmation.
+test('distributor: onAttempt gets the real signature before anything is sent', async () => {
+  const { dist, sends } = distFakes();
+  const vault = Keypair.generate();
+  const mint = Keypair.generate().publicKey.toBase58();
+  const wallets = [Keypair.generate().publicKey.toBase58(), Keypair.generate().publicKey.toBase58()];
+
+  const attempts = [];
+  const results = await dist.ensureAndTransfer(
+    vault,
+    mint,
+    8,
+    wallets.map((wallet) => ({ wallet, amountRaw: '1000' })),
+    {
+      onAttempt: (rows, signature) => {
+        attempts.push({ signature, sendsSoFar: sends.length, rows });
+      },
+    },
+  );
+
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].sendsSoFar, 0, 'the attempt is recorded BEFORE the transaction is sent');
+  assert.equal(attempts[0].signature, sigOf(sends[0]), 'the recorded signature is the one the chain will know');
+  assert.deepEqual(
+    attempts[0].rows.map((row) => row.wallet),
+    wallets,
+  );
+  for (const row of attempts[0].rows) {
+    assert.equal(row.attemptedTx, attempts[0].signature);
+    assert.equal(row.status, 'PENDING');
+    assert.equal(row.mint, mint);
+  }
+  for (const row of results) {
+    assert.equal(row.status, 'DONE');
+    assert.equal(row.tx, attempts[0].signature);
+  }
+});
+
+test('distributor: nothing is sent when the attempt cannot be recorded first', async () => {
+  const { dist, sends } = distFakes();
+  const vault = Keypair.generate();
+  const mint = Keypair.generate().publicKey.toBase58();
+  const wallet = Keypair.generate().publicKey.toBase58();
+
+  const results = await dist.ensureAndTransfer(vault, mint, 8, [{ wallet, amountRaw: '10' }], {
+    maxAttempts: 2,
+    onAttempt: async () => {
+      throw new Error('store is down');
+    },
+  });
+
+  assert.equal(sends.length, 0, 'an unrecorded transaction is never sent');
+  assert.equal(results[0].status, 'FAILED');
+  assert.equal(results[0].tx, null);
+  assert.match(results[0].error, /store is down/);
+});
+
+test('distributor: a batch that confirmed before the process died is not re-sent on the next run', async () => {
+  // Eight holders, 12.5 AAPLx each (8 decimals). The batch confirms; the keeper
+  // dies before it can persist the results, so every row is still PENDING on
+  // disk — but each carries the signature onAttempt handed it before the send.
+  const landed = new Set();
+  const { dist, sends, state } = distFakes({
+    confirm: () => ({ status: 'confirmed' }),
+    statuses: (sigs) => sigs.map((sig) => (landed.has(sig) ? { ...FINALIZED } : null)),
+  });
+  state.deliverOnSend = (signature) => landed.add(signature);
+
+  const vault = Keypair.generate();
+  const mint = Keypair.generate().publicKey.toBase58();
+  const wallets = Array.from({ length: 8 }, () => Keypair.generate().publicKey.toBase58());
+  const amountRaw = '1250000000'; // 12.5 AAPLx
+  const persisted = new Map();
+
+  const first = await dist.ensureAndTransfer(
+    vault,
+    mint,
+    8,
+    wallets.map((wallet) => ({ wallet, amountRaw })),
+    {
+      batchSize: 8,
+      onAttempt: (rows, signature) => {
+        for (const row of rows) persisted.set(row.wallet, signature);
+      },
+      // no onBatch: the crash happens between confirmation and persistence
+    },
+  );
+  assert.equal(sends.length, 1);
+  for (const row of first) assert.equal(row.status, 'DONE');
+  assert.equal(persisted.size, 8);
+
+  // Restart: the reloaded rows are PENDING and carry the attempted signature.
+  const second = await dist.ensureAndTransfer(
+    vault,
+    mint,
+    8,
+    wallets.map((wallet) => ({ wallet, amountRaw, status: 'PENDING', attemptedTx: persisted.get(wallet) })),
+    { batchSize: 8 },
+  );
+
+  assert.equal(sends.length, 1, 'the confirmed batch must never be sent a second time');
+  for (const row of second) {
+    assert.equal(row.status, 'DONE');
+    assert.equal(row.tx, persisted.get(row.wallet), 'settled against the recorded signature, not a balance delta');
+    assert.equal(row.amountRaw, amountRaw, 'nobody is credited twice');
+  }
+});
+
+test('distributor: a recorded signature the cluster cannot find leaves the row UNRESOLVED, never resent', async () => {
+  const { dist, sends } = distFakes({ statuses: (sigs) => sigs.map(() => null) });
+  const vault = Keypair.generate();
+  const mint = Keypair.generate().publicKey.toBase58();
+  const wallet = Keypair.generate().publicKey.toBase58();
+  const priorSignature = fakeSignature();
+
+  const results = await dist.ensureAndTransfer(vault, mint, 8, [
+    { wallet, amountRaw: '1250000000', status: 'PENDING', attemptedTx: priorSignature },
+  ]);
+
+  assert.equal(sends.length, 0, 'a send whose fate is unknown is not repeated on a guess');
+  assert.equal(results[0].status, 'UNRESOLVED');
+  assert.equal(results[0].tx, null, 'no tx hash is published for a transfer that never confirmed');
+  assert.equal(results[0].attemptedTx, priorSignature, 'the operator gets the signature to check');
+  assert.match(results[0].error, new RegExp(priorSignature));
+});
+
+test('distributor: a stored value that is not a signature never strands a transfer', async () => {
+  const { dist, sends } = distFakes();
+  const vault = Keypair.generate();
+  const mint = Keypair.generate().publicKey.toBase58();
+  const wallet = Keypair.generate().publicKey.toBase58();
+
+  const results = await dist.ensureAndTransfer(vault, mint, 8, [{ wallet, amountRaw: '10', attemptedTx: 'not-a-signature' }]);
+
+  assert.equal(sends.length, 1, 'nothing this module wrote could look like that, so it is not an attempt');
+  assert.equal(results[0].status, 'DONE');
+  assert.equal(results[0].tx, sigOf(sends[0]));
+});
+
+test('distributor: a recorded signature that landed with an error is safely re-sent', async () => {
+  const deadSignature = fakeSignature();
+  const { dist, sends } = distFakes({
+    confirm: () => ({ status: 'confirmed' }),
+    statuses: (sigs) => sigs.map((sig) => (sig === deadSignature ? { ...FINALIZED, err: { InstructionError: [1, 'Custom'] } } : null)),
+  });
+  const vault = Keypair.generate();
+  const mint = Keypair.generate().publicKey.toBase58();
+  const wallet = Keypair.generate().publicKey.toBase58();
+
+  const results = await dist.ensureAndTransfer(vault, mint, 8, [
+    { wallet, amountRaw: '500', status: 'PENDING', attemptedTx: deadSignature },
+  ]);
+
+  assert.equal(sends.length, 1, 'a transaction that reverted moved no tokens, so a retry is safe');
+  assert.equal(results[0].status, 'DONE');
+  assert.equal(results[0].tx, sigOf(sends[0]));
+});
+
+test('distributor: an unrelated purchase during the window never marks a transfer DONE', async () => {
+  // The send is never confirmed and never ruled out. Meanwhile the first
+  // recipient buys the same xStock on Jupiter, so their balance climbs past
+  // what we owe them. That is not evidence of anything.
   const { dist, sends, balances, state } = distFakes({
-    confirm: () => ({ status: 'expired' }),
-    statuses: (sigs) => sigs.map(() => null), // the cluster has forgotten the signature
+    confirm: () => ({ status: 'timeout' }),
+    statuses: (sigs) => sigs.map(() => null),
   });
   const vault = Keypair.generate();
   const mint = Keypair.generate().publicKey.toBase58();
@@ -592,7 +766,7 @@ test('distributor: never double-sends a transfer that already landed', async () 
   const amounts = [500n, 700n];
 
   state.deliverOnSend = () => {
-    wallets.forEach((wallet, i) => balances.set(wallet, (balances.get(wallet) ?? 0n) + amounts[i]));
+    balances.set(wallets[0], (balances.get(wallets[0]) ?? 0n) + 5000n); // their own buy, not our transfer
   };
 
   const results = await dist.ensureAndTransfer(
@@ -603,8 +777,64 @@ test('distributor: never double-sends a transfer that already landed', async () 
     { maxAttempts: 3 },
   );
 
-  assert.equal(sends.length, 1, 'the balance check must stop a second send');
-  for (const row of results) assert.equal(row.status, 'DONE');
+  assert.equal(sends.length, 1, 'a send whose fate is unknown is not repeated');
+  const buyer = results[0];
+  assert.notEqual(buyer.status, 'DONE', 'a balance increase is not proof of payment');
+  assert.equal(buyer.status, 'UNRESOLVED');
+  assert.equal(buyer.tx, null, 'never publish a signature that did not land');
+  assert.equal(buyer.attemptedTx, sigOf(sends[0]));
+  assert.match(buyer.error, /not proof of payment/);
+  assert.match(buyer.error, /neither confirmed nor ruled out/);
+
+  assert.equal(results[1].status, 'UNRESOLVED');
+  assert.equal(results[1].tx, null);
+});
+
+test('distributor: no row is ever DONE behind a signature that only reached processed', async () => {
+  const { dist, sends } = distFakes({
+    confirm: () => ({ status: 'timeout' }),
+    statuses: (sigs) => sigs.map(() => ({ slot: 9, confirmations: 3, confirmationStatus: 'processed', err: null })),
+  });
+  const vault = Keypair.generate();
+  const mint = Keypair.generate().publicKey.toBase58();
+  const wallets = [Keypair.generate().publicKey.toBase58(), Keypair.generate().publicKey.toBase58()];
+
+  const results = await dist.ensureAndTransfer(
+    vault,
+    mint,
+    8,
+    wallets.map((wallet) => ({ wallet, amountRaw: '4200' })),
+    { maxAttempts: 3 },
+  );
+
+  assert.equal(sends.length, 1);
+  for (const row of results) {
+    assert.notEqual(row.status, 'DONE');
+    assert.equal(row.tx, null);
+    assert.equal(row.attemptedTx, sigOf(sends[0]));
+  }
+});
+
+test('distributor: an expired batch the ledger has never seen is retried, and DONE carries the confirming signature', async () => {
+  const landed = new Set();
+  const { dist, sends, state } = distFakes({
+    confirm: (n) => (n === 1 ? { status: 'expired' } : { status: 'confirmed' }),
+    statuses: (sigs) => sigs.map((sig) => (landed.has(sig) ? { ...FINALIZED } : null)),
+  });
+  state.deliverOnSend = (signature) => {
+    if (sends.length > 1) landed.add(signature); // only the second attempt lands
+  };
+
+  const vault = Keypair.generate();
+  const mint = Keypair.generate().publicKey.toBase58();
+  const wallet = Keypair.generate().publicKey.toBase58();
+
+  const results = await dist.ensureAndTransfer(vault, mint, 8, [{ wallet, amountRaw: '900' }], { maxAttempts: 3 });
+
+  assert.equal(sends.length, 2, 'an expired blockhash the ledger never saw can never land, so a retry is safe');
+  assert.equal(results[0].status, 'DONE');
+  assert.equal(results[0].tx, sigOf(sends[1]));
+  assert.notEqual(results[0].tx, sigOf(sends[0]));
 });
 
 test('distributor: a batch that truly fails is FAILED, not silently dropped', async () => {

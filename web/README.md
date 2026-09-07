@@ -48,9 +48,13 @@ Then open <http://localhost:5173>.
 `js/config.js` resolves the API host in this order:
 
 1. `?api=<url>` on the page URL — a one-off override for debugging
-2. the `<meta name="api-base">` tag in `index.html`
-3. `http://localhost:4700` when the page itself is on localhost
+2. `http://localhost:4700` when the page itself is served from localhost
+3. the `<meta name="api-base">` tag in `index.html`
 4. `https://stockdrop-production.up.railway.app`
+
+Localhost outranks the meta tag on purpose: the shipped tag points at Railway,
+so without that rule a page opened locally would quietly talk to production.
+`?api=` still wins, so a local page can be aimed at a remote server deliberately.
 
 So a page served from `localhost` talks to a local server by default:
 

@@ -39,8 +39,13 @@ needs no id table and should be preferred.
 - `permanentDelegate` and `pausableConfig` are held by Backed. Worth one line in the site's
   risk disclosure: the issuer can pause transfers or claw back. This is a property of xStocks,
   not of this project.
-- `scaledUiAmountConfig.multiplier` is 1 today. If Backed ever applies a stock split it changes,
-  and raw amounts stay correct while UI amounts scale. Store raw, display scaled.
+- `scaledUiAmountConfig.multiplier` is NOT 1 for most xStocks and it drifts upward as the
+  position accrues. Measured 2026-09-07: NVDAx 1.000103090792305, AAPLx 1.0026642075893797,
+  GOOGLx 1.001926722393864, MSFTx 1.0045820905025638, TSLAx exactly 1. Each also carries a
+  pending `newMultiplier` with an effective timestamp. A wallet displays rawAmount x multiplier,
+  so a UI that ignores it shows LESS than the holder sees in Phantom. Raw base units stay the
+  truth for every transfer and allocation; the multiplier is display only, and it is now carried
+  through Jupiter -> universe -> API as `Stock.uiMultiplier` and applied by the web formatter.
 
 ## Vault
 Generated locally, secret only in `server/.env`: `769fv6KK6SAQ5FBAXdUZLdrppdHn5CqqgJBpFCLyf9up`

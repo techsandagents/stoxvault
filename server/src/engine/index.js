@@ -21,6 +21,7 @@ export {
   DEFAULT_RULES,
   validatePicks,
   defaultPicks,
+  parseDefaultBasket,
   comparePicks,
 } from './validate.js';
 

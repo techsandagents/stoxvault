@@ -149,16 +149,93 @@ export function validatePicks(picks, universe, rules = DEFAULT_RULES) {
 }
 
 /**
+ * Parse a configured default basket, e.g. `"SPCXx:100"` or `"NVDAx:60,TSLAx:40"`.
+ *
+ * Returns a list of `{symbol, pct}` or null when the string is absent or
+ * unusable, in which case the caller falls back to the top-N basket. Parsing is
+ * deliberately strict: a malformed setting must not silently become a different
+ * allocation than the operator intended, because this basket decides where real
+ * money goes for every holder who never picked.
+ *
+ * @param {string|string[]|null|undefined} spec
+ * @returns {{symbol: string, pct: number}[]|null}
+ */
+export function parseDefaultBasket(spec) {
+  if (spec === null || spec === undefined) return null;
+  const parts = (Array.isArray(spec) ? spec : String(spec).split(','))
+    .map((part) => String(part).trim())
+    .filter((part) => part !== '');
+  if (parts.length === 0) return null;
+
+  const picks = [];
+  const seen = new Set();
+  for (const part of parts) {
+    const match = /^([A-Za-z0-9.\-_]+)\s*:\s*(\d{1,3})$/.exec(part);
+    if (!match) return null;
+    const symbol = match[1];
+    const pct = Number(match[2]);
+    const key = symbol.toUpperCase();
+    if (seen.has(key) || pct <= 0 || pct > 100) return null;
+    seen.add(key);
+    picks.push({ symbol, pct });
+  }
+  if (picks.reduce((sum, p) => sum + p.pct, 0) !== 100) return null;
+  return picks;
+}
+
+/**
  * defaultPicks(universe, rules) -> Pick[]
  *
- * The default basket: the top `defaultBasketSize` stocks, split evenly.
- * If the size does not divide 100 the leftover points go to the highest-ranked
- * stocks first, so the total is always exactly 100.
+ * The basket every holder who never set preferences receives.
+ *
+ * Two shapes, in priority order:
+ *
+ *  1. `rules.defaultBasket` — an explicit allocation such as `"SPCXx:100"`.
+ *     Named stocks are resolved against the CURRENT universe, so a name that
+ *     has dropped out of the top N (delisted, or its liquidity fell below the
+ *     floor) is not silently bought anyway. If some names resolve and others do
+ *     not, the missing weight is spread across the survivors by largest
+ *     remainder so the total stays exactly 100. If NONE resolve, it falls
+ *     through to the top-N basket rather than paying nobody.
+ *
+ *  2. Otherwise the top `defaultBasketSize` stocks, split evenly, leftover
+ *     points to the highest-ranked first, so the total is always exactly 100.
+ *
+ * Note the deliberate asymmetry: a holder's own picks are capped at 60% per
+ * stock, but a configured default may concentrate further (100% in one name).
+ * A default is an operator decision about people who expressed no preference,
+ * not a basket a user built, so the per-pick cap does not apply to it.
+ *
  * A universe with fewer stocks than the basket size spreads across what exists;
  * an empty universe yields an empty basket (never an invented stock).
  */
 export function defaultPicks(universe, rules = DEFAULT_RULES) {
   const { defaultBasketSize } = resolveRules(rules);
+  const configured = parseDefaultBasket(rules && rules.defaultBasket);
+
+  if (configured) {
+    const stocks = normalizeUniverse(universe).filter(isStockLike);
+    const bySymbol = new Map();
+    for (const stock of stocks) {
+      const symbol = String(stock.symbol ?? '').toUpperCase();
+      if (symbol && !bySymbol.has(symbol)) bySymbol.set(symbol, stock);
+    }
+
+    const resolved = [];
+    for (const entry of configured) {
+      const stock = bySymbol.get(entry.symbol.toUpperCase());
+      if (stock) resolved.push({ mint: stock.mint, symbol: stock.symbol ?? entry.symbol, pct: entry.pct });
+    }
+
+    if (resolved.length > 0) {
+      const total = resolved.reduce((sum, p) => sum + p.pct, 0);
+      if (total !== 100) rebalanceToHundred(resolved, total);
+      return resolved.sort(comparePicks);
+    }
+    // Nothing configured survives in the current universe: fall through to the
+    // top-N basket rather than dropping these holders from the round entirely.
+  }
+
   const stocks = topStocks(universe, defaultBasketSize);
   const n = stocks.length;
   if (n === 0) return [];
@@ -173,4 +250,33 @@ export function defaultPicks(universe, rules = DEFAULT_RULES) {
   });
 
   return picks.sort(comparePicks);
+}
+
+/** Anything carrying a mint is usable here; ranking is not required. */
+function isStockLike(stock) {
+  return Boolean(stock && typeof stock === 'object' && typeof stock.mint === 'string' && stock.mint !== '');
+}
+
+/**
+ * Scale `picks` in place so their percentages total exactly 100, distributing
+ * the rounding remainder by largest fractional part (and, on a tie, to the
+ * larger original weight) so no percentage point is created or lost.
+ */
+function rebalanceToHundred(picks, total) {
+  if (picks.length === 0 || total <= 0) return;
+  const exact = picks.map((p) => (p.pct * 100) / total);
+  const floors = exact.map((v) => Math.floor(v));
+  let remainder = 100 - floors.reduce((sum, v) => sum + v, 0);
+
+  const order = picks
+    .map((p, i) => ({ i, frac: exact[i] - floors[i], pct: p.pct }))
+    .sort((a, b) => (b.frac !== a.frac ? b.frac - a.frac : b.pct - a.pct));
+
+  for (let k = 0; k < order.length && remainder > 0; k += 1) {
+    floors[order[k].i] += 1;
+    remainder -= 1;
+  }
+  picks.forEach((p, i) => {
+    p.pct = floors[i];
+  });
 }

@@ -166,6 +166,29 @@ export function aggregate(rows) {
 const looksTooLarge = (message) =>
   /too large|too many|exceed|payload|response size|413|limit reached|timed? ?out/i.test(String(message || ''));
 
+/**
+ * Params for `getTokenAccountsByOwner`.
+ *
+ * The second parameter is an externally-tagged enum, not a bag of options: it
+ * accepts EXACTLY ONE key, either `mint` or `programId`. Sending both is
+ * rejected outright — verified live against api.mainnet-beta.solana.com:
+ *
+ *   {"jsonrpc":"2.0","error":{"code":-32602,
+ *     "message":"Invalid parameter: invalid value: map, expected map with a single key"}}
+ *
+ * `mint` is the right key here: the node resolves which token program owns that
+ * mint by itself, so one call covers classic SPL and Token-2022 alike (also
+ * verified live: `{mint: <Token-2022 xStock>}` is accepted and answers `[]`,
+ * while `{mint, programId}` on the same wallet returns the -32602 above).
+ *
+ * @param {string} wallet owner address
+ * @param {string} mint the mint to filter by
+ * @returns {[string, {mint: string}, object]} JSON-RPC params
+ */
+export function tokenAccountsByOwnerParams(wallet, mint) {
+  return [String(wallet), { mint: String(mint) }, { encoding: 'jsonParsed', commitment: 'confirmed' }];
+}
+
 /* ------------------------------------------------------------------ service */
 
 /**
@@ -370,21 +393,16 @@ export function createHoldersService(args = {}) {
     const mint = String(cfg.tokenMint || '');
     if (!mint || typeof wallet !== 'string' || !b58decode(wallet)) return null;
     try {
+      // One call, one filter key. Filtering by mint alone already covers both
+      // token programs, so there is no second pass to make.
+      const result = await rpc.call('getTokenAccountsByOwner', tokenAccountsByOwnerParams(wallet, mint));
+      const value = Array.isArray(result?.value) ? result.value : [];
       let total = 0n;
       let accounts = 0;
-      for (const programId of [SPL_TOKEN_PROGRAM, TOKEN_2022_PROGRAM]) {
-        const result = await rpc.call('getTokenAccountsByOwner', [
-          wallet,
-          { mint, programId },
-          { encoding: 'jsonParsed', commitment: 'confirmed' },
-        ]);
-        const value = Array.isArray(result?.value) ? result.value : [];
-        for (const item of value) {
-          const amount = item?.account?.data?.parsed?.info?.tokenAmount?.amount;
-          total += toRaw(amount);
-          accounts += 1;
-        }
-        if (accounts > 0) break; // a mint lives on exactly one token program
+      for (const item of value) {
+        const amount = item?.account?.data?.parsed?.info?.tokenAmount?.amount;
+        total += toRaw(amount);
+        accounts += 1;
       }
       return { raw: total.toString(), accounts };
     } catch (err) {

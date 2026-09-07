@@ -68,6 +68,15 @@ export function normalizeStock(raw, price = null, yahooByMint = null, yahooBySym
 
   const underlyingPrice = (stockData ? num(stockData.price) : null) ?? num(raw.underlyingPrice);
 
+  // xStocks are Token-2022 with a scaledUiAmount extension: a wallet shows
+  // rawAmount * multiplier, and Backed raises the multiplier as the position
+  // accrues. Verified live 2026-09-07: NVDAx 1.000103090792305, AAPLx
+  // 1.0026642075893797, TSLAx exactly 1 — so it is NOT safe to assume 1.
+  // Raw base units stay the truth for every transfer and every allocation;
+  // this factor exists only so the UI shows the same number the wallet does.
+  const scaled = p.scaledUiConfig && typeof p.scaledUiConfig === 'object' ? p.scaledUiConfig : null;
+  const uiMultiplier = (scaled ? num(scaled.multiplier) : null) ?? num(raw.uiMultiplier) ?? 1;
+
   const yahooSymbol = str(raw.yahooSymbol)
     || (yahooByMint && yahooByMint.get(mint))
     || (yahooBySymbol && yahooBySymbol.get(symbol.toUpperCase()))
@@ -88,6 +97,7 @@ export function normalizeStock(raw, price = null, yahooByMint = null, yahooBySym
     liquidityUsd: num(p.liquidity) ?? num(raw.liquidityUsd) ?? num(raw.liquidity),
     tokenMcap: num(raw.tokenMcap) ?? num(raw.mcap),
     holderCount: Number.isFinite(raw.holderCount) ? raw.holderCount : null,
+    uiMultiplier: uiMultiplier > 0 ? uiMultiplier : 1,
   };
 }
 

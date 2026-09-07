@@ -4,20 +4,28 @@
  * The state machine of CONTRACT.md section 7:
  *
  *   PENDING -> SNAPSHOT -> SWAPPING -> DISTRIBUTING -> DONE
- *                  \-> SKIPPED(no_token | low_pool | no_holders)
+ *                  \-> SKIPPED(no_token | no_vault | low_pool | no_holders | rent_unfunded)
  *
- * Two properties matter more than anything else here:
+ * Three properties matter more than anything else here:
  *
  * 1. RESUMABLE. Every step writes its result to the store before the next step
- *    starts. A process that dies mid-round is restarted, reads the round back,
- *    and continues from exactly where it stopped: swaps already DONE are never
- *    re-quoted or re-sent, transfers already DONE are never re-sent.
+ *    starts — a swap writes its intent (signature + pre-send balance) BEFORE the
+ *    transaction goes to the cluster, not after it comes back. A process that
+ *    dies mid-round is restarted, reads the round back, and continues from
+ *    exactly where it stopped: swaps already DONE are never re-quoted or
+ *    re-sent, a swap left in SENDING is reconciled against the chain rather than
+ *    re-sent, and transfers already DONE are never re-sent.
  *
  * 2. HONEST. In DRY_RUN nothing is signed and nothing is sent. The quote
  *    endpoint is still called for real — a simulated round is a real routing
  *    decision with real prices, its `receivedRaw` is the quote's `outAmount`,
  *    every `tx` is null, and the round is flagged `simulated: true`. In LIVE the
  *    received amount is the measured on-chain balance delta, never the quote.
+ *
+ * 3. ONE MODE PER ROUND. A round records the mode it was opened in and only a
+ *    process in that mode may finish it. A rehearsal is never settled with real
+ *    transfers, real swaps are never marked done with tx:null, and the two modes
+ *    keep their carry-over dust in different keys.
  *
  * Everything numeric comes from src/engine (pure, bigint). This file does IO and
  * ordering; it does not do arithmetic that could disagree with the published
@@ -32,13 +40,37 @@ import {
   rankUniverse,
   snapshotHash,
 } from '../engine/index.js';
-import { loadVault } from '../chain/vault.js';
+import { b58encode, loadVault } from '../chain/vault.js';
 import { createRpc } from '../chain/rpc.js';
 import { createJupiter } from '../chain/jupiter.js';
 import { createDistributor } from '../chain/distributor.js';
 
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';
 export const TERMINAL = Object.freeze(['DONE', 'SKIPPED', 'FAILED']);
+
+/**
+ * Size of a Token-2022 associated token account: the 165-byte base account plus
+ * the ImmutableOwner extension the ATA program always adds (5 bytes).
+ */
+export const TOKEN_2022_ATA_BYTES = 170;
+
+/**
+ * Rent-exempt minimum for that account, used when the RPC cannot be asked.
+ * (128 + 170) bytes x 3480 lamports/byte-year x 2 years = 2,074,080 lamports
+ * (~0.00207 SOL), the same order as the ~0.00204 SOL SPEC.md section 4 budgets
+ * for a 165-byte account. The vault is the payer for every recipient account it
+ * has to create, so this is real money and the round has to reserve it.
+ */
+export const ATA_RENT_LAMPORTS = 2_074_080n;
+
+/** Base signature fee of one transaction. */
+export const BASE_TX_FEE_LAMPORTS = 5_000n;
+
+/** Recipients per distribution transaction (mirrors the distributor's default). */
+export const TRANSFER_BATCH_SIZE = 8;
+
+/** Swap rows that must never be re-sent by the swap loop. */
+const SWAP_UNTOUCHABLE = Object.freeze(['DONE', 'SKIPPED', 'UNRESOLVED']);
 
 export class RunnerError extends Error {
   constructor(message, code = 'runner_error') {
@@ -73,6 +105,91 @@ export async function nextRoundId(db, base) {
     if (!(await db.getRound(candidate))) return candidate;
   }
   throw new RunnerError(`cannot allocate a round id for ${base}`, 'round_id_exhausted');
+}
+
+/* ----------------------------------------------------------------- mode */
+
+/**
+ * The mode a stored round was created in. A round carries `mode` from the
+ * moment it is opened; the `simulated` flag is the fallback for a document
+ * written before that field existed. `null` means "unknowable", and only a
+ * round that has not started yet is allowed to adopt the current process mode.
+ * @param {object} round
+ * @returns {'LIVE'|'DRY_RUN'|null}
+ */
+export function storedRoundMode(round) {
+  if (typeof round?.mode === 'string' && round.mode !== '') return round.mode;
+  if (round?.simulated === true) return 'DRY_RUN';
+  if (round?.simulated === false && typeof round?.status === 'string' && round.status !== 'PENDING') return 'LIVE';
+  return null;
+}
+
+/**
+ * Carry-over dust is per mode. A DRY_RUN round must never read or write the key
+ * a LIVE round owns: folding real dust into a fictional allocation and then
+ * overwriting the key with quote-derived numbers would make real tokens in the
+ * vault invisible forever.
+ */
+export const carryKeyFor = (simulated) => (simulated ? 'carry:sim' : 'carry');
+
+/* ------------------------------------------------------------------- costs */
+
+/**
+ * What this round costs the vault outside the pool itself.
+ *
+ * The vault is the rent payer for every recipient token account (SPEC.md
+ * section 4: the project pays, it is never deducted from a holder's drop), so
+ * the pool has to be sized after that money is set aside. The account count is
+ * the round's own shape: one account per (holder, stock) pair that could
+ * receive something. Accounts that already exist cost nothing, which makes this
+ * an upper bound, and an upper bound is the only safe way to size a reserve.
+ *
+ * @param {{rpc?: object, cfg: object, plan: object, logger?: object}} args
+ * @returns {Promise<{accounts: number, perAccountLamports: string, rentLamports: string,
+ *   txCount: number, feeLamports: string, totalLamports: string, source: 'rpc'|'constant'}>}
+ */
+export async function estimateRoundCosts({ rpc, cfg, plan, logger = noopLogger }) {
+  const contributors = plan?.contributorsByMint;
+  let accounts = 0;
+  let batches = 0;
+  if (contributors instanceof Map) {
+    for (const rows of contributors.values()) {
+      const count = Array.isArray(rows) ? rows.length : 0;
+      accounts += count;
+      batches += Math.ceil(count / TRANSFER_BATCH_SIZE);
+    }
+  }
+  const swapTxs = (Array.isArray(plan?.demand) ? plan.demand : []).filter((d) => big(d.solLamports, 0n) > 0n).length;
+
+  let perAccount = ATA_RENT_LAMPORTS;
+  let source = 'constant';
+  if (rpc && typeof rpc.call === 'function') {
+    try {
+      const value = await rpc.call('getMinimumBalanceForRentExemption', [TOKEN_2022_ATA_BYTES]);
+      const fromChain = big(value, 0n);
+      if (fromChain > 0n) {
+        perAccount = fromChain;
+        source = 'rpc';
+      }
+    } catch (err) {
+      logger.warn?.(`could not read the rent-exempt minimum from the RPC (${err.message}); using ${ATA_RENT_LAMPORTS} lamports per account`);
+    }
+  }
+
+  const txCount = swapTxs + batches;
+  const perTxFee = BASE_TX_FEE_LAMPORTS + big(cfg?.priorityFeeLamports, 0n);
+  const rentLamports = perAccount * BigInt(accounts);
+  const feeLamports = perTxFee * BigInt(txCount);
+
+  return {
+    accounts,
+    perAccountLamports: perAccount.toString(),
+    rentLamports: rentLamports.toString(),
+    txCount,
+    feeLamports: feeLamports.toString(),
+    totalLamports: (rentLamports + feeLamports).toString(),
+    source,
+  };
 }
 
 /* ------------------------------------------------------------- service glue */
@@ -271,6 +388,32 @@ export async function runRound(deps = {}) {
     if (round) logger.info?.(`resuming round ${round.id} from ${round.status}`);
   }
 
+  // A round carries the mode it was created in, and only a process in that same
+  // mode may finish it. Otherwise a restart with LIVE=1 would settle a rehearsal
+  // with real transfers sized from quotes nobody executed, and a restart with
+  // LIVE=0 would mark real, paid-for swaps DONE with tx:null so the stocks are
+  // never sent and --retry says there is nothing to retry.
+  if (round) {
+    const createdIn = storedRoundMode(round);
+    if (createdIn && createdIn !== cfg.mode) {
+      const message =
+        `round ${round.id} was created in ${createdIn} mode and this process is running in ${cfg.mode} mode; ` +
+        `refusing to execute it (a ${createdIn} round must never be finished with ${cfg.mode} sends)`;
+      logger.error?.(message);
+      const failed = await db.updateRound(round.id, {
+        status: 'FAILED',
+        resumeFrom: TERMINAL.includes(round.status) ? (round.resumeFrom ?? 'PENDING') : round.status,
+        error: message,
+        modeMismatch: { roundMode: createdIn, processMode: cfg.mode },
+        finishedAt: new Date(now()).toISOString(),
+      });
+      // An operator who named this round gets the refusal back. Everything else
+      // (boot resume, the scheduler) opens a fresh round in the current mode.
+      if (retry) return failed;
+      round = null;
+    }
+  }
+
   if (!round) {
     const scheduledAt = deps.scheduledAt ? new Date(deps.scheduledAt) : new Date(now());
     const id = await nextRoundId(db, roundIdFor(scheduledAt));
@@ -333,9 +476,23 @@ export async function runRound(deps = {}) {
       else logger.info?.(`round ${round.id}: nothing to retry`);
     }
     if (!back) return round;
+    // Tokens this round bought but could not deliver were handed to the carry
+    // key when it finished. If a later round has already taken that carry, the
+    // same tokens would be sent twice; the operator has to settle that by hand.
+    if (back === 'DISTRIBUTING' && Array.isArray(round.undelivered) && round.undelivered.length > 0) {
+      const latest = await db.latestRound();
+      if (latest && latest.id !== round.id) {
+        logger.warn?.(
+          `round ${round.id}: its undelivered tokens already carried over to a later round (${latest.id}); refusing to re-send them`,
+        );
+        return round;
+      }
+    }
     logger.info?.(`round ${round.id}: reopening a ${round.status} round at ${back}`);
     round = await db.updateRound(round.id, { status: back, error: null, finishedAt: null });
   }
+
+  const carryKey = carryKeyFor(simulated);
 
   const save = async (patch) => {
     round = await db.updateRound(round.id, patch);
@@ -437,7 +594,13 @@ export async function runRound(deps = {}) {
         if (prefs && typeof prefs.wallet === 'string' && Array.isArray(prefs.picks)) prefsByWallet.set(prefs.wallet, prefs.picks);
       }
 
-      const plan = buildRoundPlan({
+      // Two passes. The first learns the shape of the round — which holders want
+      // which stocks — because that, and only that, says how many token accounts
+      // the vault may have to open and pay rent for. The pool is then sized after
+      // that money is set aside, and the split is redone against what is really
+      // spendable. The contributor set does not depend on the pool, so the second
+      // pass moves the lamports and nothing else.
+      const shape = buildRoundPlan({
         poolLamports: round.poolLamports,
         reserveLamports: round.reserveLamports,
         holders: eligible,
@@ -446,12 +609,49 @@ export async function runRound(deps = {}) {
         rules: cfg.rules,
       });
 
+      const costs = await estimateRoundCosts({ rpc, cfg, plan: shape, logger });
+      const grossPool = big(round.poolLamports, 0n);
+      const roundCost = big(costs.totalLamports, 0n);
+      const netPool = grossPool > roundCost ? grossPool - roundCost : 0n;
+      const rentEstimate = {
+        ...costs,
+        grossPoolLamports: grossPool.toString(),
+        netPoolLamports: netPool.toString(),
+      };
+
+      if (netPool < big(cfg.minRoundPoolLamports, 0n)) {
+        // The pool cleared the minimum before rent and fees and does not clear it
+        // after. Half-paying a round — buying stocks and then running out of SOL
+        // partway through the transfers — is worse than not running it.
+        return await skip('rent_unfunded', {
+          snapshot,
+          universe: universe.stocks,
+          universeSource: universe.source,
+          rentEstimate,
+          poolLamports: netPool.toString(),
+          reserveLamports: (big(cfg.feeReserveLamports, 0n) + roundCost).toString(),
+        });
+      }
+
+      const plan =
+        netPool === grossPool
+          ? shape
+          : buildRoundPlan({
+              poolLamports: netPool.toString(),
+              reserveLamports: round.reserveLamports,
+              holders: eligible,
+              prefsByWallet,
+              universe: universe.stocks,
+              rules: cfg.rules,
+            });
+
       const swaps = plan.demand.map((entry) => ({
         mint: entry.mint,
         symbol: entry.symbol,
         solLamports: entry.solLamports,
         quotedOut: null,
         receivedRaw: null,
+        beforeRaw: null,
         tx: null,
         // A stock whose share of a small pool floors to zero lamports is not a
         // failure and not a trade; it is recorded as skipped and its holders
@@ -460,7 +660,7 @@ export async function runRound(deps = {}) {
         error: null,
       }));
 
-      const carryIn = normalizeCarry(await db.getKV('carry'));
+      const carryIn = normalizeCarry(await db.getKV(carryKey));
 
       await save({
         status: 'SWAPPING',
@@ -468,6 +668,9 @@ export async function runRound(deps = {}) {
         universe: universe.stocks,
         universeSource: universe.source,
         universeUpdatedAt: universe.updatedAt,
+        poolLamports: netPool.toString(),
+        reserveLamports: (big(cfg.feeReserveLamports, 0n) + roundCost).toString(),
+        rentEstimate,
         top5: plan.top5,
         demand: plan.demand,
         plan: {
@@ -500,7 +703,14 @@ export async function runRound(deps = {}) {
 
       for (let i = 0; i < swaps.length; i++) {
         const swap = swaps[i];
-        if (swap.status === 'DONE' || swap.status === 'SKIPPED') continue;
+        if (SWAP_UNTOUCHABLE.includes(swap.status)) {
+          if (swap.status === 'UNRESOLVED') {
+            logger.warn?.(
+              `round ${round.id}: swap ${swap.symbol || swap.mint} is UNRESOLVED (${swap.tx ?? 'no signature'}); leaving it for an operator rather than risking a second send`,
+            );
+          }
+          continue;
+        }
         if (swap.status === 'FAILED' && !retry) continue;
 
         const lamports = big(swap.solLamports, 0n);
@@ -522,19 +732,39 @@ export async function runRound(deps = {}) {
           symbol: swap.symbol,
           lamports,
           decimals: decimalsByMint.get(swap.mint) ?? 8,
+          // A row left in SENDING is a swap that was signed and handed to the
+          // cluster and whose fate we never learned. It is reconciled, never
+          // re-sent blind.
+          prior:
+            swap.status === 'SENDING'
+              ? { signature: swap.tx ?? null, beforeRaw: swap.beforeRaw ?? null, quotedOut: swap.quotedOut ?? null }
+              : null,
+          // The intent record: the signature and the pre-send balance reach the
+          // store BEFORE the transaction reaches the cluster, so a SIGKILL
+          // between the two leaves evidence instead of a mystery.
+          onIntent: async (patch) => {
+            swaps[i] = { ...swaps[i], ...patch };
+            await save({ swaps });
+          },
         });
-        swaps[i] = { ...swap, ...result };
+        swaps[i] = { ...swaps[i], ...result };
         // Persist after every swap: a crash here must never lose the knowledge
         // that SOL already left the vault.
         await save({ swaps });
       }
 
       const spent = swaps.reduce((acc, s) => acc + (s.status === 'DONE' ? big(s.solLamports, 0n) : 0n), 0n);
-      const carryIn = Array.isArray(round.carryIn) && round.carryIn.length > 0 ? round.carryIn : normalizeCarry(await db.getKV('carry'));
+      const unresolved = swaps.reduce((acc, s) => acc + (s.status === 'UNRESOLVED' ? big(s.solLamports, 0n) : 0n), 0n);
+      const carryIn =
+        Array.isArray(round.carryIn) && round.carryIn.length > 0 ? round.carryIn : normalizeCarry(await db.getKV(carryKey));
       await save({
         status: 'DISTRIBUTING',
         carryIn,
-        stats: { ...round.stats, solSpentLamports: spent.toString() },
+        stats: {
+          ...round.stats,
+          solSpentLamports: spent.toString(),
+          solUnresolvedLamports: unresolved.toString(),
+        },
       });
     }
 
@@ -619,22 +849,31 @@ export async function runRound(deps = {}) {
       const transfersFailed = transfers.filter((t) => t.status === 'FAILED').length;
       const skippedDust = transfers.filter((t) => t.status === 'SKIPPED_DUST').length;
 
+      // Stock that was bought but not delivered is still sitting in the vault.
+      // It is not the holder's loss and it is not a rounding remainder: it goes
+      // back into the carry so the next round hands it out, instead of being
+      // stranded outside every number the ledger publishes.
+      const undelivered = undeliveredByMint(transfers);
+      const carryOut = mergeCarry(applied.carryOut, undelivered);
+
       // The carry key is the *next* round's starting dust, so only the newest
       // round may write it. Retrying an old round must not hand a later round's
       // dust back to it.
       const latest = await db.latestRound();
       if (!latest || latest.id === round.id) {
-        await db.setKV('carry', applied.carryOut);
+        await db.setKV(carryKey, carryOut);
       } else {
-        logger.warn?.(`round ${round.id}: not the latest round (${latest.id}); leaving the carry-over key alone`);
+        logger.warn?.(`round ${round.id}: not the latest round (${latest.id}); leaving the ${carryKey} key alone`);
       }
 
       await save({
         status: 'DONE',
         finishedAt: new Date(now()).toISOString(),
-        carryOut: applied.carryOut,
+        carryOut,
+        undelivered,
         perStock: applied.perStock,
         simulated,
+        mode: cfg.mode,
         stats: {
           ...round.stats,
           transfersDone,
@@ -642,6 +881,7 @@ export async function runRound(deps = {}) {
           transfersSkippedDust: skippedDust,
           swapsDone: (round.swaps ?? []).filter((s) => s.status === 'DONE').length,
           swapsFailed: (round.swaps ?? []).filter((s) => s.status === 'FAILED').length,
+          swapsUnresolved: (round.swaps ?? []).filter((s) => s.status === 'UNRESOLVED').length,
         },
       });
       logger.info?.(
@@ -670,30 +910,165 @@ export async function runRound(deps = {}) {
 /* --------------------------------------------------------------- one swap */
 
 /**
- * Quote (always real), then either simulate the fill or send it.
- * @returns {Promise<{quotedOut: string|null, receivedRaw: string|null, tx: string|null, status: string, error: string|null}>}
+ * What happened to the swap signatures we have already put on the wire?
+ *
+ * Two independent sources, exactly as chain/distributor.js does it for
+ * transfers: the cluster's own view of the signature (with
+ * searchTransactionHistory, so a confirmed transaction is found even after the
+ * blockhash window), and the vault's balance of the output mint compared with
+ * the reading taken before the FIRST attempt.
+ *
+ * @returns {Promise<{state:'landed', signature: string, receivedRaw: bigint}
+ *   | {state:'dead'} | {state:'unknown', reason: string}>}
+ *   landed = tokens are in the vault; dead = nothing sent can ever land, so a
+ *   fresh attempt is safe; unknown = we do not know, so nothing may be re-sent.
  */
-async function swapOne({ cfg, rpc, jup, dist, vaultKeypair, live, logger, mint, symbol, lamports, decimals }) {
+async function reconcileSwap({ rpc, dist, cfg, mint, symbol, sent, beforeRaw, logger = noopLogger }) {
+  let statusesRead = false;
+  if (!sent.some((s) => s.verdict === 'landed') && typeof rpc?.getSignatureStatuses === 'function') {
+    try {
+      const statuses = await rpc.getSignatureStatuses(
+        sent.map((s) => s.signature),
+        { searchTransactionHistory: true },
+      );
+      statusesRead = true;
+      for (let i = 0; i < sent.length; i++) {
+        const status = Array.isArray(statuses) ? statuses[i] : null;
+        if (!status) continue; // unknown to the cluster: keep whatever we already knew
+        if (status.err) {
+          // It landed and failed: no SOL was swapped, so this attempt is dead.
+          sent[i].verdict = 'dead';
+          continue;
+        }
+        const level = status.confirmationStatus || (status.confirmations === null ? 'finalized' : 'processed');
+        sent[i].verdict = level === 'confirmed' || level === 'finalized' ? 'landed' : 'unknown';
+      }
+    } catch (err) {
+      logger.warn?.(`swap ${symbol || mint}: could not read signature statuses (${err.message}); falling back to the vault balance`);
+    }
+  }
+
+  // The vault's own balance is the check that does not depend on any signature.
+  let measured = null;
+  if (beforeRaw !== null && beforeRaw !== undefined && typeof dist?.measureReceived === 'function') {
+    try {
+      measured = await dist.measureReceived(cfg.vaultAddress, mint, beforeRaw);
+    } catch (err) {
+      logger.warn?.(`swap ${symbol || mint}: could not read the vault balance (${err.message})`);
+      measured = null;
+    }
+  }
+
+  const landed = sent.find((s) => s.verdict === 'landed');
+  if (landed && measured) return { state: 'landed', signature: landed.signature, receivedRaw: measured.receivedRaw };
+  if (measured && measured.receivedRaw > 0n) {
+    // Tokens arrived. Whichever attempt delivered them, this swap is done and a
+    // second one would spend the allocation twice.
+    return { state: 'landed', signature: (landed ?? sent[sent.length - 1]).signature, receivedRaw: measured.receivedRaw };
+  }
+  if (landed) return { state: 'unknown', reason: `${landed.signature} confirmed but the fill could not be measured` };
+  if (sent.every((s) => s.verdict === 'dead')) return { state: 'dead' };
+  return {
+    state: 'unknown',
+    reason: `the fate of ${sent[sent.length - 1].signature} is unknown${statusesRead ? '' : ' (the cluster could not be asked)'}`,
+  };
+}
+
+/**
+ * Quote (always real), then either simulate the fill or send it.
+ *
+ * The LIVE path never sends twice for one allocation. Before every attempt
+ * after the first, and before touching a row a crash left in SENDING, it
+ * establishes what the previous signature did: adopt it if it landed, retry
+ * only when the previous attempt provably cannot land, and otherwise stop with
+ * UNRESOLVED so a person settles it. `receivedRaw` is always measured against
+ * the balance taken before attempt ONE, so a fill from any attempt is counted
+ * rather than stranded.
+ *
+ * @returns {Promise<{quotedOut: string|null, receivedRaw: string|null, beforeRaw: string|null,
+ *   tx: string|null, status: 'DONE'|'FAILED'|'UNRESOLVED', error: string|null}>}
+ */
+async function swapOne({ cfg, rpc, jup, dist, vaultKeypair, live, logger = noopLogger, mint, symbol, lamports, decimals, prior = null, onIntent = null }) {
   const attempts = 3;
+  const label = symbol || mint;
   let lastError = null;
-  let quotedOut = null;
+  // A resumed row keeps the quote it was sent with: adopting a landed swap must
+  // not blank the number the ledger already published.
+  let quotedOut = typeof prior?.quotedOut === 'string' ? prior.quotedOut : null;
+
+  const askQuote = () =>
+    jup.quote({
+      inputMint: SOL_MINT,
+      outputMint: mint,
+      amount: lamports.toString(),
+      slippageBps: cfg.slippageBps,
+    });
+
+  if (!live) {
+    // DRY_RUN: the route and the price are real, the fill is not, and nothing
+    // is signed, sent or reconciled.
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const quote = await askQuote();
+        quotedOut = String(quote.outAmount);
+        return { quotedOut, receivedRaw: quotedOut, beforeRaw: null, tx: null, status: 'DONE', error: null, simulated: true };
+      } catch (err) {
+        lastError = err;
+        logger.warn?.(`swap ${label} attempt ${attempt}/${attempts} failed: ${err.message}`);
+      }
+    }
+    return {
+      quotedOut,
+      receivedRaw: null,
+      beforeRaw: null,
+      tx: null,
+      status: 'FAILED',
+      error: lastError ? String(lastError.message) : 'swap failed',
+    };
+  }
+
+  /** Every signature this allocation has ever put on the wire. */
+  const sent = [];
+  /** The vault's balance of `mint` before attempt ONE. */
+  let beforeRaw = null;
+
+  if (prior && typeof prior.beforeRaw === 'string' && /^\d+$/.test(prior.beforeRaw)) beforeRaw = BigInt(prior.beforeRaw);
+  if (prior && typeof prior.signature === 'string' && prior.signature !== '') sent.push({ signature: prior.signature, verdict: 'unknown' });
+
+  const finish = (patch) => ({ quotedOut, beforeRaw: beforeRaw === null ? null : beforeRaw.toString(), ...patch });
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (sent.length > 0) {
+      const verdict = await reconcileSwap({ rpc, dist, cfg, mint, symbol, sent, beforeRaw, logger });
+      if (verdict.state === 'landed') {
+        logger.info?.(`swap ${label}: adopting ${verdict.signature} (it landed); not sending again`);
+        return finish({
+          receivedRaw: verdict.receivedRaw.toString(),
+          tx: verdict.signature,
+          status: 'DONE',
+          error: verdict.receivedRaw === 0n ? 'transaction confirmed but the vault balance did not increase' : null,
+        });
+      }
+      if (verdict.state === 'unknown') {
+        logger.error?.(`swap ${label}: ${verdict.reason}; recording it UNRESOLVED instead of risking a double spend`);
+        return finish({
+          receivedRaw: null,
+          tx: sent[sent.length - 1].signature,
+          status: 'UNRESOLVED',
+          error: `${verdict.reason}. An operator must settle this swap before the SOL is spent again.`,
+        });
+      }
+    }
+
+    let record = null;
     try {
-      const quote = await jup.quote({
-        inputMint: SOL_MINT,
-        outputMint: mint,
-        amount: lamports.toString(),
-        slippageBps: cfg.slippageBps,
-      });
+      const quote = await askQuote();
       quotedOut = String(quote.outAmount);
 
-      if (!live) {
-        // DRY_RUN: the route and the price are real, the fill is not.
-        return { quotedOut, receivedRaw: quotedOut, tx: null, status: 'DONE', error: null, simulated: true };
-      }
+      // Read once, before the first send. Every later measurement is against
+      // this number, so tokens from an attempt we lost sight of still count.
+      if (beforeRaw === null) beforeRaw = await dist.balanceOf(cfg.vaultAddress, mint);
 
-      const beforeRaw = await dist.balanceOf(cfg.vaultAddress, mint);
       const built = await jup.buildSwapTx({
         quoteResponse: quote,
         userPublicKey: cfg.vaultAddress,
@@ -705,44 +1080,89 @@ async function swapOne({ cfg, rpc, jup, dist, vaultKeypair, live, logger, mint, 
 
       const tx = VersionedTransaction.deserialize(Buffer.from(built.swapTransaction, 'base64'));
       tx.sign([vaultKeypair]);
-      const signature = await rpc.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-      const confirmation = await rpc.confirmSignature(signature, {
+
+      // The signature exists the moment the vault signs, so the intent can be
+      // written down before the transaction is handed over. A crash between the
+      // two now leaves a SENDING row that says exactly what to reconcile.
+      record = { signature: b58encode(tx.signatures[0]), verdict: 'unknown' };
+      sent.push(record);
+      if (onIntent) {
+        await onIntent({
+          status: 'SENDING',
+          tx: record.signature,
+          beforeRaw: beforeRaw.toString(),
+          quotedOut,
+          attempt,
+          error: null,
+        });
+      }
+
+      const returned = await rpc.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+      if (typeof returned === 'string' && returned !== '' && returned !== record.signature) {
+        record.signature = returned;
+        if (onIntent) await onIntent({ tx: returned });
+      }
+
+      const confirmation = await rpc.confirmSignature(record.signature, {
         lastValidBlockHeight: built.lastValidBlockHeight,
         timeoutMs: 90_000,
       });
       if (confirmation.status !== 'confirmed') {
-        throw new RunnerError(`swap ${signature.slice(0, 8)}… ${confirmation.status}`, `swap_${confirmation.status}`);
+        // failed = it landed and errored, expired = its blockhash is past: both
+        // mean this transaction can never move SOL, so another attempt is safe.
+        // A timeout means nothing of the sort.
+        record.verdict = confirmation.status === 'failed' || confirmation.status === 'expired' ? 'dead' : 'unknown';
+        throw new RunnerError(`swap ${record.signature.slice(0, 8)}… ${confirmation.status}`, `swap_${confirmation.status}`);
       }
+      record.verdict = 'landed';
 
-      // The fill is what the chain says it is.
+      // The fill is what the chain says it is, measured from before attempt one.
       const measured = await dist.measureReceived(cfg.vaultAddress, mint, beforeRaw);
-      return {
-        quotedOut,
+      return finish({
         receivedRaw: measured.receivedRaw.toString(),
-        tx: signature,
+        tx: record.signature,
         status: 'DONE',
-        error:
-          measured.receivedRaw === 0n
-            ? 'transaction confirmed but the vault balance did not increase'
-            : null,
-      };
+        error: measured.receivedRaw === 0n ? 'transaction confirmed but the vault balance did not increase' : null,
+      });
     } catch (err) {
       lastError = err;
-      logger.warn?.(`swap ${symbol || mint} attempt ${attempt}/${attempts} failed: ${err.message}`);
+      logger.warn?.(`swap ${label} attempt ${attempt}/${attempts} failed: ${err.message}`);
     }
   }
 
-  // Three strikes: the SOL simply stays in the vault and joins the next pool.
-  return {
-    quotedOut,
+  // Out of attempts. If anything was ever sent, settle it before calling this a
+  // no-op: SOL may already have left the vault.
+  if (sent.length > 0) {
+    const verdict = await reconcileSwap({ rpc, dist, cfg, mint, symbol, sent, beforeRaw, logger });
+    if (verdict.state === 'landed') {
+      return finish({
+        receivedRaw: verdict.receivedRaw.toString(),
+        tx: verdict.signature,
+        status: 'DONE',
+        error: verdict.receivedRaw === 0n ? 'transaction confirmed but the vault balance did not increase' : null,
+      });
+    }
+    if (verdict.state === 'unknown') {
+      return finish({
+        receivedRaw: null,
+        tx: sent[sent.length - 1].signature,
+        status: 'UNRESOLVED',
+        error: `${verdict.reason}. An operator must settle this swap before the SOL is spent again.`,
+      });
+    }
+  }
+
+  // Three strikes and nothing landed: the SOL simply stays in the vault and
+  // joins the next pool.
+  return finish({
     receivedRaw: null,
     tx: null,
     status: 'FAILED',
     error: lastError ? String(lastError.message) : 'swap failed',
-  };
+  });
 }
 
-/** kv 'carry' -> [{mint, amountRaw}] */
+/** kv carry key -> [{mint, amountRaw}] */
 function normalizeCarry(value) {
   if (!value) return [];
   const list = Array.isArray(value) ? value : Array.isArray(value.carry) ? value.carry : [];
@@ -750,6 +1170,40 @@ function normalizeCarry(value) {
     .filter((e) => e && typeof e.mint === 'string' && e.mint !== '')
     .map((e) => ({ mint: e.mint, amountRaw: String(e.amountRaw ?? e.amount ?? '0') }))
     .filter((e) => /^\d+$/.test(e.amountRaw) && e.amountRaw !== '0');
+}
+
+/**
+ * Tokens this round bought and did not manage to deliver, per mint. A transfer
+ * that is not DONE and not dust is stock still sitting in the vault.
+ * @param {{mint: string, amountRaw: string, status: string}[]} transfers
+ * @returns {{mint: string, amountRaw: string}[]}
+ */
+export function undeliveredByMint(transfers) {
+  const byMint = new Map();
+  for (const transfer of Array.isArray(transfers) ? transfers : []) {
+    if (!transfer || typeof transfer.mint !== 'string' || transfer.mint === '') continue;
+    if (transfer.status === 'DONE' || transfer.status === 'SKIPPED_DUST') continue;
+    const amount = big(transfer.amountRaw, 0n);
+    if (amount <= 0n) continue;
+    byMint.set(transfer.mint, (byMint.get(transfer.mint) ?? 0n) + amount);
+  }
+  return [...byMint.entries()]
+    .map(([mint, amountRaw]) => ({ mint, amountRaw: amountRaw.toString() }))
+    .sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0));
+}
+
+/** Sum carry lists per mint (dust + undelivered), sorted by mint. */
+export function mergeCarry(...lists) {
+  const byMint = new Map();
+  for (const list of lists) {
+    for (const entry of normalizeCarry(list)) {
+      byMint.set(entry.mint, (byMint.get(entry.mint) ?? 0n) + BigInt(entry.amountRaw));
+    }
+  }
+  return [...byMint.entries()]
+    .filter(([, amount]) => amount > 0n)
+    .map(([mint, amount]) => ({ mint, amountRaw: amount.toString() }))
+    .sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0));
 }
 
 export default runRound;

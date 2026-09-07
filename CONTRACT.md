@@ -73,7 +73,7 @@ Ownership during the parallel build (do not edit files you don't own; add new fi
 | ROUND_INTERVAL_HOURS | 6 | rounds at 00/06/12/18 UTC |
 | ROUND_JITTER_MIN | 10 | snapshot taken at a random offset within ±jitter of the mark (jitter seeded per round, recorded) |
 | MIN_ROUND_POOL_SOL | 0.5 | below this the round is SKIPPED (`low_pool`) and SOL carries over |
-| FEE_RESERVE_SOL | 0.05 | always left in the vault for tx fees + ATA rent |
+| FEE_RESERVE_SOL | 0.05 | flat floor always left in the vault. It is NOT the rent budget: each round additionally reserves its own measured ATA rent + per-tx fees (§7, `Round.rentEstimate`) before splitting the pool. |
 | UNIVERSE_SIZE | 20 | |
 | DEFAULT_BASKET_SIZE | 5 | |
 | LIQ_MIN_USD | 50000 | Jupiter `liquidity` filter before ranking |
@@ -106,20 +106,53 @@ Holder { wallet, balance: string (base units, bigint as string) }
 Snapshot { takenAt, slot, tokenMint, supply, eligibleThreshold, holders: Holder[] (eligible only), excluded: string[], hash (sha256 of canonical JSON) }
 
 Round {
-  id (e.g. r_2026-09-07T12), scheduledAt, startedAt, finishedAt,
+  id (e.g. r_2026-09-07T12), scheduledAt, startedAt, finishedAt, jitterMin: number|null,
   status: 'PENDING'|'SNAPSHOT'|'SWAPPING'|'DISTRIBUTING'|'DONE'|'SKIPPED'|'FAILED',
-  simulated: boolean, skipReason: 'no_token'|'low_pool'|'no_holders'|null,
-  poolLamports: string, reserveLamports: string,
+  mode: 'LIVE'|'DRY_RUN',            // the mode the round was OPENED in; it never changes
+  simulated: boolean,                // === (mode !== 'LIVE')
+  skipReason: 'no_token'|'no_vault'|'low_pool'|'no_holders'|'rent_unfunded'|null,
+  balanceLamports: string,           // vault SOL at PENDING
+  poolLamports: string,              // what the round may actually spend (after reserve + rent + fees)
+  reserveLamports: string,           // FEE_RESERVE_SOL + rentEstimate.totalLamports
+  rentEstimate: {                    // null until SNAPSHOT; recorded so the ledger explains the SOL
+    accounts: number,                //   max recipient token accounts = Σ (holder, stock) pairs
+    perAccountLamports: string,      //   rent-exempt minimum for a 170-byte Token-2022 account
+    rentLamports: string,            //   accounts × perAccountLamports  (the project pays, SPEC §4)
+    txCount: number,                 //   swap txs + transfer batches (8 recipients per batch)
+    feeLamports: string,             //   txCount × (5000 + PRIORITY_FEE_LAMPORTS)
+    totalLamports: string,           //   rentLamports + feeLamports
+    source: 'rpc'|'constant',        //   getMinimumBalanceForRentExemption, else 2074080 lamports
+    grossPoolLamports, netPoolLamports: string
+  } | null,
   universe: Stock[20] (as used), top5: string[] (mints),
   snapshot: Snapshot | null,
   demand: [{ mint, symbol, weight: string /*bigint*/, shareBps: number, solLamports: string }],
-  swaps:  [{ mint, symbol, solLamports, quotedOut, receivedRaw, tx: string|null, status: 'PENDING'|'DONE'|'FAILED', error }],
+  swaps:  [{ mint, symbol, solLamports, quotedOut, receivedRaw, beforeRaw, tx: string|null,
+             status: 'PENDING'|'SENDING'|'DONE'|'FAILED'|'SKIPPED'|'UNRESOLVED', error }],
   transfers: [{ wallet, mint, symbol, amountRaw: string, tx: string|null, status: 'PENDING'|'DONE'|'FAILED'|'SKIPPED_DUST', error }],
   carryIn:  [{ mint, amountRaw }], carryOut: [{ mint, amountRaw }],
-  stats: { eligibleHolders, prefHolders, defaultHolders, transfersDone, transfersFailed, solSpentLamports }
+  undelivered: [{ mint, amountRaw }],   // bought but not delivered; included in carryOut
+  resumeFrom: string|null,              // the step a FAILED round died in (`--retry <id>`)
+  modeMismatch: { roundMode, processMode } | null,
+  stats: { eligibleHolders, prefHolders, defaultHolders, transfersDone, transfersFailed,
+           transfersSkippedDust, swapsDone, swapsFailed, swapsUnresolved,
+           solSpentLamports, solUnresolvedLamports }
   error: string|null
 }
 ```
+
+Swap statuses:
+- `PENDING` nothing sent. `SKIPPED` its share of the pool floored to 0 lamports.
+- `SENDING` **the vault signed this transaction and handed it to the cluster; the outcome is not
+  known yet.** The row carries the signature and `beforeRaw` (the vault's balance of that mint
+  before the first attempt) and is written BEFORE `sendRawTransaction`, so a crash between the two
+  leaves evidence. A `SENDING` row is always reconciled on resume, never re-sent.
+- `DONE` the tokens are in the vault; `receivedRaw` in LIVE is the measured balance delta from
+  before the FIRST attempt, so a fill from any attempt is counted.
+- `FAILED` nothing landed and nothing can: the SOL stayed in the vault and joins the next pool.
+- `UNRESOLVED` a signature exists and the chain will not say what happened to it. The SOL may or
+  may not be gone, so the keeper stops touching this allocation: it is never re-sent, not even by
+  `--retry`, and an operator settles it against `tx` by hand.
 
 All token amounts cross the API as **strings of base units** plus a `decimals` field, and as ui numbers only in clearly-named `*Ui` fields.
 
@@ -220,14 +253,56 @@ Round math must be **exactly reproducible** from the stored round document by an
 
 Scheduler: compute next mark (00/06/12/18 UTC), add jitter in [−J, +J] minutes (deterministic from round id via sha256, recorded in the round as `jitterMin`), sleep, run. On boot: if `unfinishedRound()` exists, RESUME it before scheduling.
 
+The next mark is chosen **strictly after the last mark this keeper handled**, not from the clock
+alone (`planNext(cfg, now, afterMark)`; the keeper seeds `afterMark` on boot from
+`latestRound().scheduledAt` and updates it before every fire). Jitter is signed: a mark with a
+negative jitter fires *before* itself, so a round can finish while its own mark is still in the
+future — and a scheduler that only looked at the clock would select that same mark again and again
+until it passed, running dozens of junk rounds back to back.
+
+**Mode is a property of the round, not of the process.** A round records the `mode` it was opened
+in. On resume, `round.mode !== CFG.mode` is refused: the round is marked FAILED with
+`modeMismatch` and an error naming both modes, and a fresh round is opened in the current mode
+(an operator who named the round with `--retry` gets the refusal back instead). A simulated round
+is never completed with real sends, and a live round is never completed with simulated ones.
+
 Runner state machine (each step persists before proceeding, so a crash resumes idempotently):
 ```
 PENDING     → read vault SOL; pool = balance − reserve. if TOKEN_MINT blank → SKIPPED(no_token). if pool < MIN → SKIPPED(low_pool)
-SNAPSHOT    → holders (services/holders) → computeEligible → if none → SKIPPED(no_holders). refresh universe. freeze prefs (allPrefs). demand + splitPool. persist.
-SWAPPING    → for each stock with solLamports>0 and swap.status!='DONE': Jupiter quote → (LIVE: build+sign+send+confirm; DRY_RUN: use quote.outAmount as receivedRaw, tx=null). persist after each. Failure after 3 retries → swap FAILED, SOL stays.
-DISTRIBUTING→ for each DONE swap: allocate → for each transfer with status PENDING: ensure ATA (Token-2022, payer = vault) + transferChecked, batched 8 per tx (LIVE) / mark DONE with tx=null (DRY_RUN). persist per batch. 3 retries then FAILED (retried next round via carry? no: recorded as FAILED, operator re-runs `scripts/run-round.mjs --retry <id>`).
-DONE        → carryOut written to kv 'carry'; stats computed.
+SNAPSHOT    → holders (services/holders) → computeEligible → if none → SKIPPED(no_holders). refresh universe. freeze prefs (allPrefs).
+              plan once to learn the round's shape → rentEstimate (recipient accounts × rent + per-tx fees)
+              → pool = pool − rentEstimate.totalLamports; if that is under MIN → SKIPPED(rent_unfunded)
+              → re-split the reduced pool. persist demand + rentEstimate.
+SWAPPING    → for each stock with solLamports>0 and status PENDING/SENDING (FAILED only with --retry):
+              Jupiter quote → DRY_RUN: receivedRaw = quote.outAmount, tx=null, nothing signed.
+              LIVE: read the vault's balance of the mint ONCE (beforeRaw) → build → sign → persist the
+              row as SENDING with its signature and beforeRaw → send → confirm → receivedRaw = measured
+              delta from beforeRaw. Before any further attempt, RECONCILE the previous signature
+              (getSignatureStatuses with searchTransactionHistory, plus the vault's balance against
+              beforeRaw): landed → adopt it and stop; provably dead (on-chain error, or the blockhash
+              expired) → a fresh attempt is safe; unknown → status UNRESOLVED, never a second send.
+              3 dead attempts → swap FAILED, SOL stays. persist after each.
+DISTRIBUTING→ for each DONE swap: allocate → for each transfer with status PENDING: ensure ATA (Token-2022, payer = vault) + transferChecked, batched 8 per tx (LIVE) / mark DONE with tx=null (DRY_RUN). persist per batch. 3 retries then FAILED (operator re-runs `scripts/run-round.mjs --retry <id>`).
+DONE        → undelivered = every transfer that is neither DONE nor SKIPPED_DUST, summed per mint;
+              carryOut = allocation dust + undelivered, written to the carry key; stats computed.
 ```
+
+**Carry-over is keyed by mode.** LIVE writes kv `carry`, DRY_RUN writes kv `carry:sim`, and neither
+reads the other. A rehearsal that consumed the live key would fold real dust into fictional
+allocations and then overwrite the key with quote-derived numbers, making real tokens in the vault
+invisible forever, and would make the next LIVE round allocate more than it received. Only the
+latest round may write its carry key.
+
+**Rent is the project's cost, and the round sizes itself around it** (SPEC.md §4: never deducted
+from a holder's drop). The vault is the payer for every recipient token account, ~0.00207 SOL each,
+so 50 holders on a 5-stock basket is ~0.51 SOL — ten times the flat `FEE_RESERVE_SOL`. The estimate
+is an upper bound (accounts that already exist cost nothing) and is recorded on the round as
+`rentEstimate`. A round that cannot cover it is SKIPPED with `rent_unfunded` rather than half-paid.
+
+**Nothing bought is ever stranded.** Stock that a round bought but could not deliver stays in the
+vault, so it is added to `carryOut` (and listed in `undelivered`) and the next round hands it out.
+`--retry` on a round whose undelivered tokens have already carried over to a later round is refused,
+because sending them again would spend them twice.
 xStocks are Token-2022 (`TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`), 8 decimals, no transfer-hook program, so `createAssociatedTokenAccountIdempotentInstruction` + `createTransferCheckedInstruction` from @solana/spl-token with `TOKEN_2022_PROGRAM_ID` are sufficient. Rent is paid by the vault (project pays). The memecoin itself is standard SPL Token (pump.fun), 6 decimals.
 
 Jupiter: `GET {JUP_BASE}/swap/v1/quote?inputMint=So111...&outputMint=<mint>&amount=<lamports>&slippageBps=<bps>&restrictIntermediateTokens=true` then `POST {JUP_BASE}/swap/v1/swap` `{ quoteResponse, userPublicKey, wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true, prioritizationFeeLamports }` → `swapTransaction` (base64 v0 tx). Sign with web3.js `VersionedTransaction.deserialize` + `tx.sign([vault])`, send with `skipPreflight:false`, confirm by polling `getSignatureStatuses`. Received amount in LIVE mode = **actual** delta of the vault's xStock token balance measured before/after (not the quote).

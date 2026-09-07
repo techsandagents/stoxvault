@@ -21,6 +21,139 @@ import { log } from '../util/log.js';
 const logger = log.child('stats');
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
+/* ------------------------------------------------------- round totals ---- */
+
+/** KV key holding the running round aggregate. */
+export const ROUND_TOTALS_KEY = 'stats:round-totals';
+/** Bump when the aggregate's shape or its counting rules change: old docs are rebuilt. */
+export const ROUND_TOTALS_VERSION = 2;
+/** How many summaries one page of the incremental scan pulls. */
+export const ROUND_TOTALS_PAGE = 100;
+/** Hard cap on pages per call, so a cold start on a huge ledger is still bounded. */
+export const ROUND_TOTALS_MAX_PAGES = 50;
+/** Non-terminal rounds we keep re-checking. In practice at most one is open at a time. */
+export const ROUND_TOTALS_MAX_OPEN = 64;
+/** Ids sharing the cursor's exact millisecond. Rounds are 6h apart; this is slack, not a budget. */
+export const ROUND_TOTALS_MAX_CURSOR_IDS = 256;
+
+const ZERO = '0';
+const isDigits = (v) => typeof v === 'string' && /^\d+$/.test(v);
+
+/** A fresh, empty aggregate. */
+export function emptyRoundTotals() {
+  return {
+    version: ROUND_TOTALS_VERSION,
+    cursorAt: null,
+    cursorIds: [],
+    distributedLamports: ZERO,
+    distributedRounds: 0,
+    simulatedLamports: ZERO,
+    simulatedRounds: 0,
+    failedRounds: 0,
+    skippedRounds: 0,
+    lastAt: null,
+    lastDistributedAt: null,
+    open: [],
+  };
+}
+
+/** Accept a stored aggregate only if it is this version and structurally sound. */
+export function normalizeRoundTotals(raw) {
+  if (!raw || typeof raw !== 'object' || raw.version !== ROUND_TOTALS_VERSION) return null;
+  const base = emptyRoundTotals();
+  return {
+    ...base,
+    cursorAt: typeof raw.cursorAt === 'string' ? raw.cursorAt : null,
+    cursorIds: Array.isArray(raw.cursorIds)
+      ? raw.cursorIds.filter((id) => typeof id === 'string').slice(-ROUND_TOTALS_MAX_CURSOR_IDS)
+      : [],
+    distributedLamports: isDigits(raw.distributedLamports) ? raw.distributedLamports : ZERO,
+    distributedRounds: Number.isFinite(raw.distributedRounds) ? Number(raw.distributedRounds) : 0,
+    simulatedLamports: isDigits(raw.simulatedLamports) ? raw.simulatedLamports : ZERO,
+    simulatedRounds: Number.isFinite(raw.simulatedRounds) ? Number(raw.simulatedRounds) : 0,
+    failedRounds: Number.isFinite(raw.failedRounds) ? Number(raw.failedRounds) : 0,
+    skippedRounds: Number.isFinite(raw.skippedRounds) ? Number(raw.skippedRounds) : 0,
+    lastAt: typeof raw.lastAt === 'string' ? raw.lastAt : null,
+    lastDistributedAt: typeof raw.lastDistributedAt === 'string' ? raw.lastDistributedAt : null,
+    open: Array.isArray(raw.open)
+      ? raw.open
+          .filter((o) => o && typeof o.id === 'string')
+          .slice(0, ROUND_TOTALS_MAX_OPEN)
+          .map((o) => ({ id: o.id, at: typeof o.at === 'string' ? o.at : null }))
+      : [],
+  };
+}
+
+/** The SOL a round actually put through Jupiter, as recorded by the SWAPPING step. */
+function spentLamportsOf(round) {
+  const spent = round?.stats?.solSpentLamports;
+  return isDigits(spent) ? BigInt(spent) : 0n;
+}
+
+/** The timestamp a round is reported by ("last round at"). */
+function roundAt(round) {
+  const at = round?.finishedAt || round?.startedAt || round?.createdAt || round?.scheduledAt || null;
+  return typeof at === 'string' && Number.isFinite(Date.parse(at)) ? at : null;
+}
+
+/**
+ * The timestamp the aggregate's cursor is keyed on. Must be a field a round
+ * never rewrites, or a round that finishes between two calls would jump back in
+ * front of the cursor and be counted a second time.
+ */
+function orderKeyOf(round) {
+  const at = round?.createdAt || round?.scheduledAt || null;
+  return typeof at === 'string' && Number.isFinite(Date.parse(at)) ? at : null;
+}
+
+/**
+ * How one round counts toward the public numbers.
+ *
+ * The headline "SOL distributed" is a claim that this project bought real
+ * stocks and sent them to real wallets, so only a round that actually did it
+ * may contribute:
+ *
+ *   - `simulated` rounds (DRY_RUN, LIVE=0) never touched the chain. Every one
+ *     of their swaps is marked DONE against a Jupiter *quote*, so their
+ *     solSpentLamports is the whole pool — pure fiction as a spend figure.
+ *     Counted separately, labelled, never merged.
+ *   - FAILED and SKIPPED rounds distributed nothing.
+ *   - a round still in flight is counted when it finishes, not before.
+ *
+ * @returns {{kind: 'distributed'|'simulated'|'failed'|'skipped'|'open', lamports: bigint}}
+ */
+export function classifyRound(round) {
+  const status = String(round?.status || '');
+  if (status === 'FAILED') return { kind: 'failed', lamports: 0n };
+  if (status === 'SKIPPED') return { kind: 'skipped', lamports: 0n };
+  if (status !== 'DONE') return { kind: 'open', lamports: 0n };
+  const lamports = spentLamportsOf(round);
+  return round?.simulated === true
+    ? { kind: 'simulated', lamports }
+    : { kind: 'distributed', lamports };
+}
+
+/** Fold one round into an aggregate, in place. */
+function foldRound(agg, round) {
+  const { kind, lamports } = classifyRound(round);
+  const at = roundAt(round);
+  if (at && (!agg.lastAt || Date.parse(at) > Date.parse(agg.lastAt))) agg.lastAt = at;
+
+  if (kind === 'distributed') {
+    agg.distributedLamports = (BigInt(agg.distributedLamports) + lamports).toString();
+    agg.distributedRounds += 1;
+    if (at && (!agg.lastDistributedAt || Date.parse(at) > Date.parse(agg.lastDistributedAt))) agg.lastDistributedAt = at;
+  } else if (kind === 'simulated') {
+    agg.simulatedLamports = (BigInt(agg.simulatedLamports) + lamports).toString();
+    agg.simulatedRounds += 1;
+  } else if (kind === 'failed') {
+    agg.failedRounds += 1;
+  } else if (kind === 'skipped') {
+    agg.skippedRounds += 1;
+  }
+  return kind;
+}
+
 /**
  * Largest-remainder apportionment of 100 points across weighted entries.
  *
@@ -185,44 +318,201 @@ export function createStatsService({ cfg, db, universe, holders, now = Date.now 
     return { ...result, snapshotAt: balances?.takenAt ?? null, eligibleHolders: balances?.map ? balances.map.size : null };
   }
 
-  /** Totals over every published round. */
-  async function roundTotals() {
-    let count = 0;
-    let totalLamports = 0n;
-    let lastAt = null;
-    let scanned = 0;
-    try {
-      const first = await db.listRounds({ limit: 200, offset: 0 });
-      count = Number(first?.total ?? 0);
-      const pages = [first.items];
-      for (let offset = 200; offset < Math.min(count, 2000); offset += 200) {
-        const page = await db.listRounds({ limit: 200, offset });
-        pages.push(page.items);
+  /* ------------------------------------------------------- round totals -- */
+  //
+  // Totals are kept as a running aggregate in the KV store rather than
+  // recomputed from the whole ledger on every unauthenticated /api/stats call.
+  // A request folds in only the rounds that appeared since the cursor, plus any
+  // round that was still open last time, so the steady-state cost is one KV read
+  // and one page of summaries no matter how long the ledger gets.
+
+  /** In-process copy, so the totals survive a KV store that cannot persist. */
+  let localTotals = null;
+  /** Collapses a burst of concurrent /api/stats calls onto one scan. */
+  let inFlight = null;
+
+  async function loadTotals() {
+    if (typeof db.getKV === 'function') {
+      try {
+        const stored = normalizeRoundTotals(await db.getKV(ROUND_TOTALS_KEY));
+        if (stored) return stored;
+      } catch (err) {
+        logger.debug(`round totals cache unreadable: ${err?.message || err}`);
       }
-      for (const items of pages) {
-        for (const round of items) {
-          scanned += 1;
-          const spent = round?.stats?.solSpentLamports;
-          if (typeof spent === 'string' && /^\d+$/.test(spent)) totalLamports += BigInt(spent);
-          else if (Array.isArray(round?.demand)) {
-            for (const d of round.demand) {
-              if (typeof d?.solLamports === 'string' && /^\d+$/.test(d.solLamports)) totalLamports += BigInt(d.solLamports);
-            }
-          }
-          const at = round?.finishedAt || round?.startedAt || round?.createdAt || null;
-          if (at && (!lastAt || Date.parse(at) > Date.parse(lastAt))) lastAt = at;
-        }
-      }
-    } catch (err) {
-      logger.warn(`round totals unavailable: ${err?.message || err}`);
     }
-    return {
-      count,
-      totalSolDistributed: lamportsToSol(totalLamports),
-      totalLamportsDistributed: totalLamports.toString(),
-      lastAt,
-      scanned,
-    };
+    return localTotals ? normalizeRoundTotals(localTotals) ?? emptyRoundTotals() : emptyRoundTotals();
+  }
+
+  async function saveTotals(agg) {
+    localTotals = agg;
+    if (typeof db.setKV !== 'function') return;
+    try {
+      await db.setKV(ROUND_TOTALS_KEY, agg);
+    } catch (err) {
+      logger.debug(`round totals cache not written: ${err?.message || err}`);
+    }
+  }
+
+  /**
+   * Re-check the rounds that were unfinished when we last looked, folding in
+   * the ones that have since reached a terminal state. Everything listed here is
+   * behind the cursor, so this is the only place those rounds are ever counted.
+   *
+   * @returns {Promise<{folded: number, handled: Set<string>}>}
+   */
+  async function foldOpenRounds(agg) {
+    const handled = new Set(agg.open.map((o) => o.id));
+    if (agg.open.length === 0 || typeof db.getRound !== 'function') return { folded: 0, handled };
+    const stillOpen = [];
+    let folded = 0;
+    for (const entry of agg.open) {
+      let round = null;
+      try {
+        round = await db.getRound(entry.id);
+      } catch (err) {
+        logger.debug(`could not re-read round ${entry.id}: ${err?.message || err}`);
+        stillOpen.push(entry);
+        continue;
+      }
+      if (!round) continue; // deleted: nothing to count
+      const kind = foldRound(agg, round);
+      if (kind === 'open') stillOpen.push({ id: entry.id, at: orderKeyOf(round) });
+      else folded += 1;
+    }
+    agg.open = stillOpen.slice(0, ROUND_TOTALS_MAX_OPEN);
+    return { folded, handled };
+  }
+
+  /**
+   * Fold every round newer than the cursor. listRounds is newest-first, so the
+   * walk stops at the first round the aggregate has already seen.
+   *
+   * The cursor is keyed on `createdAt`, which a round never changes — keying it
+   * on finishedAt would let a round that was open at the last call reappear
+   * ahead of the cursor and be counted twice.
+   */
+  async function foldNewRounds(agg, handled) {
+    const cursorMs = agg.cursorAt ? Date.parse(agg.cursorAt) : null;
+    const cursorIds = new Set(agg.cursorIds);
+    const fresh = [];
+    let total = 0;
+    let offset = 0;
+    let truncated = false;
+
+    for (let page = 0; page < ROUND_TOTALS_MAX_PAGES; page++) {
+      const result = await db.listRounds({ limit: ROUND_TOTALS_PAGE, offset });
+      total = Number(result?.total ?? 0);
+      const items = Array.isArray(result?.items) ? result.items : [];
+      if (items.length === 0) break;
+
+      let reachedCursor = false;
+      for (const round of items) {
+        const at = orderKeyOf(round);
+        const ms = at ? Date.parse(at) : null;
+        if (ms === null) {
+          // Nothing to order it by, so it can never be de-duplicated: leave it out
+          // rather than risk counting the same SOL twice.
+          logger.debug(`round ${round?.id ?? '?'} has no createdAt; left out of the totals`);
+          continue;
+        }
+        if (cursorMs !== null) {
+          if (ms < cursorMs) {
+            reachedCursor = true;
+            break;
+          }
+          if (ms === cursorMs && cursorIds.has(round?.id)) continue; // already folded
+        }
+        if (handled.has(round?.id)) continue; // an open round, counted above
+        fresh.push(round);
+      }
+      if (reachedCursor) break;
+
+      offset += items.length;
+      if (offset >= total) break;
+      if (page === ROUND_TOTALS_MAX_PAGES - 1) truncated = true;
+    }
+
+    // Oldest first, so the cursor only ever moves forward.
+    fresh.reverse();
+    for (const round of fresh) {
+      const kind = foldRound(agg, round);
+      const at = orderKeyOf(round);
+      if (kind === 'open') {
+        agg.open = agg.open.filter((o) => o.id !== round.id);
+        agg.open.push({ id: round.id, at });
+        if (agg.open.length > ROUND_TOTALS_MAX_OPEN) agg.open = agg.open.slice(-ROUND_TOTALS_MAX_OPEN);
+      }
+      const ms = Date.parse(at);
+      const cursor = agg.cursorAt ? Date.parse(agg.cursorAt) : null;
+      if (cursor === null || ms > cursor) {
+        agg.cursorAt = at;
+        agg.cursorIds = [round.id];
+      } else if (ms === cursor && !agg.cursorIds.includes(round.id)) {
+        agg.cursorIds.push(round.id);
+        if (agg.cursorIds.length > ROUND_TOTALS_MAX_CURSOR_IDS) agg.cursorIds = agg.cursorIds.slice(-ROUND_TOTALS_MAX_CURSOR_IDS);
+      }
+    }
+
+    return { total, scanned: fresh.length, truncated };
+  }
+
+  /**
+   * Totals over the published rounds.
+   *
+   * `totalSolDistributed` is the public headline and counts ONLY real,
+   * non-simulated rounds that reached DONE. Simulated (DRY_RUN) activity is
+   * reported beside it under `simulated`, clearly separated, and never added in.
+   */
+  async function roundTotals() {
+    if (inFlight) return inFlight;
+    inFlight = (async () => {
+      const agg = await loadTotals();
+      let count = 0;
+      let scanned = 0;
+      let truncated = false;
+      let ok = true;
+      try {
+        const reopened = await foldOpenRounds(agg);
+        scanned += reopened.folded;
+        const walked = await foldNewRounds(agg, reopened.handled);
+        count = walked.total;
+        scanned += walked.scanned;
+        truncated = walked.truncated;
+        if (truncated) logger.warn(`round totals stopped after ${ROUND_TOTALS_MAX_PAGES} pages; the aggregate will catch up next call`);
+        await saveTotals(agg);
+      } catch (err) {
+        ok = false;
+        logger.warn(`round totals unavailable: ${err?.message || err}`);
+      }
+
+      const distributed = BigInt(agg.distributedLamports);
+      const simulated = BigInt(agg.simulatedLamports);
+      return {
+        count: ok ? count : agg.distributedRounds + agg.simulatedRounds + agg.failedRounds + agg.skippedRounds,
+        totalSolDistributed: lamportsToSol(distributed),
+        totalLamportsDistributed: distributed.toString(),
+        distributedRounds: agg.distributedRounds,
+        lastAt: agg.lastAt,
+        lastDistributedAt: agg.lastDistributedAt,
+        // Never merged into the headline: these lamports were never swapped and
+        // never sent. They exist so the pre-launch dry runs stay visible.
+        simulated: {
+          rounds: agg.simulatedRounds,
+          totalSol: lamportsToSol(simulated),
+          totalLamports: simulated.toString(),
+        },
+        failedRounds: agg.failedRounds,
+        skippedRounds: agg.skippedRounds,
+        openRounds: agg.open.length,
+        scanned,
+        truncated,
+      };
+    })();
+    try {
+      return await inFlight;
+    } finally {
+      inFlight = null;
+    }
   }
 
   /** Vault SOL + USD, and the part of it that is actually spendable this round. */
@@ -263,7 +553,19 @@ export function createStatsService({ cfg, db, universe, holders, now = Date.now 
       : { basis: cfg.launched ? 'holding-weighted' : 'equal-weight', demand: [], contributors: 0, ignored: 0, eligibleHolders: null, snapshotAt: null };
     const rounds = roundsResult.status === 'fulfilled'
       ? roundsResult.value
-      : { count: 0, totalSolDistributed: 0, totalLamportsDistributed: '0', lastAt: null, scanned: 0 };
+      : {
+          count: 0,
+          totalSolDistributed: 0,
+          totalLamportsDistributed: '0',
+          distributedRounds: 0,
+          lastAt: null,
+          lastDistributedAt: null,
+          simulated: { rounds: 0, totalSol: 0, totalLamports: '0' },
+          failedRounds: 0,
+          skippedRounds: 0,
+          openRounds: 0,
+          scanned: 0,
+        };
 
     for (const settled of [vaultResult, prefsResult, demandResult, roundsResult]) {
       if (settled.status === 'rejected') logger.warn(`stats part failed: ${settled.reason?.message || settled.reason}`);
@@ -276,7 +578,17 @@ export function createStatsService({ cfg, db, universe, holders, now = Date.now 
       solPriceUsd: vault.solPriceUsd,
       prefHolders,
       eligibleHolders: cfg.launched ? dem.eligibleHolders : null,
-      rounds: { count: rounds.count, totalSolDistributed: rounds.totalSolDistributed, lastAt: rounds.lastAt },
+      // totalSolDistributed is the hero tile. It counts real, non-simulated
+      // rounds that finished, and nothing else. DRY_RUN activity is reported
+      // beside it, labelled, so a pre-launch dry run can never read as a payout.
+      rounds: {
+        count: rounds.count,
+        totalSolDistributed: rounds.totalSolDistributed,
+        distributedRounds: rounds.distributedRounds,
+        lastAt: rounds.lastAt,
+        lastDistributedAt: rounds.lastDistributedAt,
+        simulated: rounds.simulated,
+      },
       demand: dem.demand.map((d) => ({ symbol: d.symbol, mint: d.mint, pct: d.pct })),
       demandBasis: dem.basis,
       demandContributors: dem.contributors,

@@ -13,6 +13,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { log } from './util/log.js';
+import { parseDefaultBasket } from './engine/validate.js';
 
 export const LAMPORTS_PER_SOL = 1_000_000_000;
 export const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -351,6 +352,17 @@ export function buildConfig(env = {}, opts = {}) {
   const feeReserveSol = Math.max(0, num(env, 'FEE_RESERVE_SOL', 0.05));
   const universeSize = clampInt(int(env, 'UNIVERSE_SIZE', 20), 1, 100, 20);
   const defaultBasketSize = clampInt(int(env, 'DEFAULT_BASKET_SIZE', 5), 1, universeSize, 5);
+  // What a holder who never set preferences receives. Either an explicit
+  // allocation by ticker ("SPCXx:100", "NVDAx:60,TSLAx:40") or blank for the
+  // top `defaultBasketSize` split evenly. An explicit basket is resolved against
+  // the live universe each round, so a ticker that drops out is not bought
+  // anyway. Named tickers also cost far less to deliver: every stock a holder
+  // receives needs its own token account, and the project pays that rent
+  // (~0.002137 SOL each, measured on chain), so a one-stock default is five
+  // times cheaper per holder than a five-stock one.
+  const defaultBasketRaw = str(env, 'DEFAULT_BASKET', '');
+  const defaultBasket = defaultBasketRaw === '' ? null : defaultBasketRaw;
+  const defaultBasketValid = defaultBasket === null || parseDefaultBasket(defaultBasket) !== null;
   const liqMinUsd = Math.max(0, num(env, 'LIQ_MIN_USD', 50000));
   const slippageBps = clampInt(int(env, 'SLIPPAGE_BPS', 100), 1, 10000, 100);
   const priorityFeeLamports = Math.max(0, int(env, 'PRIORITY_FEE_LAMPORTS', 200000));
@@ -371,6 +383,7 @@ export function buildConfig(env = {}, opts = {}) {
     intervalHours,
     universeSize,
     defaultBasketSize,
+    defaultBasket,
   });
 
   const cfg = {
@@ -410,6 +423,8 @@ export function buildConfig(env = {}, opts = {}) {
 
     universeSize,
     defaultBasketSize,
+    defaultBasket,
+    defaultBasketValid,
     liqMinUsd,
     slippageBps,
     priorityFeeLamports,
@@ -471,6 +486,7 @@ export function buildConfig(env = {}, opts = {}) {
         feeReserveSol,
         universeSize,
         defaultBasketSize,
+        defaultBasket,
         liqMinUsd,
         slippageBps,
         priorityFeeLamports,
@@ -523,6 +539,16 @@ export function loadConfig(opts = {}) {
     }
     if (!cfg.launched) {
       log.info('TOKEN_MINT is blank: the coin is not launched, rounds will be SKIPPED with reason no_token.');
+    }
+    // A malformed DEFAULT_BASKET silently becomes the top-N basket, which sends
+    // real money somewhere the operator did not choose. Say so loudly.
+    if (!cfg.defaultBasketValid) {
+      log.warn(
+        `DEFAULT_BASKET="${cfg.defaultBasket}" is not valid (expect TICKER:PCT entries totalling exactly 100, e.g. "SPCXx:100"). ` +
+        `Holders with no picks will receive the top ${cfg.defaultBasketSize} instead.`,
+      );
+    } else if (cfg.defaultBasket) {
+      log.info(`default basket for holders with no picks: ${cfg.defaultBasket}`);
     }
   }
   return cfg;

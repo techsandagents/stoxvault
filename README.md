@@ -9,7 +9,10 @@ Every 6 hours:
 2. Holders are snapshotted. Anyone holding at least **0.1% of supply** is eligible.
 3. Each holder's share of the pool is spent on **their own picks** — 2 to 5 stocks from the
    **top 20 xStocks by company market cap**, each between 10% and 60%, summing to 100%.
-4. Holders who never picked get the **default basket**: the top 5, 20% each.
+4. Holders who never picked get the **default basket**, set by `DEFAULT_BASKET`. It is currently
+   **100% SpaceX (SPCXx)**. Leave the setting blank for the top 5 at 20% each.
+   A one-stock default is five times cheaper to deliver, because the project pays a token-account
+   rent of about 0.002137 SOL per holder per stock.
 5. Demand is aggregated, so it is **one swap per stock**, then the stock tokens are split back
    out pro-rata and transferred. Account rent is paid by the project, never deducted from a drop.
 6. The full ledger is published: snapshot hash, per-stock swap tx, per-holder amount and tx.

@@ -323,7 +323,7 @@
         <div class="pane pane--empty" id="basket-picks-empty">
           <div class="state-block">
             <p class="state-block__title">No stocks selected</p>
-            <p class="state-block__text">Add between two and five stocks below, or start from the default basket — the top five by underlying market cap, 20% each.</p>
+            <p class="state-block__text">Add between two and five stocks below, or start from the default basket that holders who pick nothing receive: <span data-default-basket>the top five by underlying market cap, 20% each</span>.</p>
             <span class="state-block__actions">
               <button class="btn btn--sm" id="btn-empty-default" type="button">Use the default basket</button>
             </span>
@@ -352,7 +352,7 @@
 
       <div class="basket__actions">
         <button class="btn btn--sm" id="btn-autobalance" type="button">Auto-balance</button>
-        <button class="btn btn--sm" id="btn-reset-basket" type="button">Reset to top 5</button>
+        <button class="btn btn--sm" id="btn-reset-basket" type="button">Reset to the default</button>
         <button class="btn btn--sm" id="btn-revert-basket" type="button" hidden>Discard changes</button>
         <button class="btn btn--primary" id="btn-save-basket" type="button" disabled>Connect to save</button>
       </div>
@@ -834,7 +834,7 @@
       <div class="pane pane--empty" id="demand-empty">
         <div class="state-block">
           <p class="state-block__title">No picks saved yet</p>
-          <p class="state-block__text">Nobody has saved a basket. Until someone does, every round buys the default basket — the top five by market cap, 20% each.</p>
+          <p class="state-block__text">Nobody has saved a basket. Until someone does, every round buys the default basket: <span data-default-basket>the top five by market cap, 20% each</span>.</p>
         </div>
       </div>
 
@@ -1105,7 +1105,7 @@
     <li class="step">
       <span class="step__num">STEP 4</span>
       <h3 class="step__title">Your picks become demand</h3>
-      <p class="step__text">Each holder's balance is spread across their chosen stocks. No saved basket means the default: the top five by market cap, 20% each.</p>
+      <p class="step__text">Each holder's balance is spread across their chosen stocks. No saved basket means the default: <span data-default-basket>the top five by market cap, 20% each</span>.</p>
     </li>
     <li class="step">
       <span class="step__num">STEP 5</span>

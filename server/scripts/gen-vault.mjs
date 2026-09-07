@@ -5,17 +5,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-function b58encode(buf) {
-  const digits = [0];
-  for (const byte of buf) {
-    let carry = byte;
-    for (let i = 0; i < digits.length; i++) { const x = (digits[i] << 8) + carry; digits[i] = x % 58; carry = (x / 58) | 0; }
-    while (carry) { digits.push(carry % 58); carry = (carry / 58) | 0; }
-  }
-  let lead = ''; for (const b of buf) { if (b === 0) lead += '1'; else break; }
-  return lead + digits.reverse().map((d) => B58[d]).join('');
-}
+// One base58 implementation, shared with the server, rather than a second copy here:
+// a duplicate encoder is exactly the kind of thing that silently disagrees later.
+process.env.STOCKDROP_QUIET = '1';
+const { b58encode } = await import(new URL('../src/config.js', import.meta.url).href);
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.resolve(here, '..', '.env');
 const existing = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';

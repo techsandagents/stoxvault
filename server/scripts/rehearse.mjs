@@ -40,6 +40,21 @@ process.env.TOKEN_DECIMALS = process.env.TOKEN_DECIMALS || '6';
 process.env.DATA_DIR = './data/rehearsal';
 process.env.START_KEEPER = '0';
 
+// The rehearsal writes synthetic preferences and a fake round. That is fine in a
+// throwaway file store and unacceptable in the real database, where it would put
+// invented wallets into the public prefs list and a fake round into the public
+// ledger. Postgres is therefore refused outright rather than silently isolated:
+// on Railway, DATABASE_URL is set for the whole service, so a well-meaning
+// `npm run rehearse` there would otherwise pollute production.
+if (process.env.DATABASE_URL) {
+  console.error('rehearse: DATABASE_URL is set, and this script writes synthetic prefs and a fake round.');
+  console.error('          Refusing to touch a real database. Run it with DATABASE_URL unset:');
+  console.error('');
+  console.error('            DATABASE_URL= npm run rehearse -- 25');
+  console.error('');
+  process.exit(2);
+}
+
 const storeDir = path.join(serverRoot, 'data', 'rehearsal');
 fs.rmSync(storeDir, { recursive: true, force: true });
 

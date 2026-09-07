@@ -23,6 +23,7 @@ import {
   truncAddr,
   solscanTx,
   isoOf,
+  num,
   DASH,
 } from '../format.js';
 import { toast } from './toast.js';
@@ -45,6 +46,27 @@ function setStatus(el, status) {
   // SKIPPED_DUST is a transfer outcome, not a round status: colour it like a
   // skip, but keep the precise word in the text.
   el.dataset.status = KNOWN_STATUS.has(value) ? value : value.startsWith('SKIPPED') ? 'SKIPPED' : '';
+}
+
+/**
+ * What the "Received" column is allowed to say about one swap.
+ *
+ * `quotedOut` is written when the swap is quoted, and it stays on the document
+ * when the swap then FAILS — so falling back to it would print a Jupiter
+ * estimate in the one column that is supposed to record what the vault actually
+ * received. A quote is not a fill. Only a swap that reports DONE with a
+ * received amount filled; every other swap received nothing, and its quote is
+ * reported as a quote or not at all.
+ *
+ * @param {{status?: string, receivedRaw?: string|null, quotedOut?: string|null}} swap
+ * @returns {{filled: string|null, quoted: string|null, status: string}}
+ */
+export function swapReceipt(swap) {
+  const status = String(swap?.status ?? '').toUpperCase();
+  const received = swap?.receivedRaw ?? null;
+  const quoted = swap?.quotedOut ?? null;
+  const filled = status === 'DONE' && received !== null ? received : null;
+  return { filled, quoted: filled === null ? quoted : null, status };
 }
 
 /** A tx cell: a real link, or an honest non-link. */
@@ -172,11 +194,26 @@ export function createRounds({ onRetry, getStock } = {}) {
         row.querySelector('[data-field="symbol"]').textContent = swap.symbol || truncAddr(swap.mint);
         row.querySelector('[data-field="solIn"]').textContent = `${lamportsToSolText(swap.solLamports, 4)} SOL`;
 
-        const received = swap.receivedRaw ?? swap.quotedOut ?? null;
+        const { filled, quoted } = swapReceipt(swap);
         const decimals = decimalsFor(swap.mint);
+        const uiMultiplier = multiplierFor(swap.mint);
         const receivedCell = row.querySelector('[data-field="received"]');
-        receivedCell.textContent = received === null ? DASH : fmtTokenAmount(received, decimals);
-        if (received !== null) receivedCell.title = fmtTokenAmountExact(received, decimals, swap.symbol || '');
+        if (filled !== null) {
+          receivedCell.textContent = fmtTokenAmount(filled, decimals, { uiMultiplier });
+          receivedCell.title = fmtTokenAmountExact(filled, decimals, swap.symbol || '', uiMultiplier);
+        } else if (quoted !== null) {
+          // Nothing arrived. The quote is still worth showing — it is what the
+          // swap was aiming at — but only labelled as a quote, never as a fill.
+          receivedCell.textContent = `${DASH} (quoted ${fmtTokenAmount(quoted, decimals, { uiMultiplier })})`;
+          receivedCell.title = `Nothing was received. Jupiter quoted ${fmtTokenAmountExact(
+            quoted,
+            decimals,
+            swap.symbol || '',
+            uiMultiplier,
+          )} before the swap; the swap did not complete.`;
+        } else {
+          receivedCell.textContent = DASH;
+        }
 
         setStatus(row.querySelector('[data-field="status"]'), swap.status);
         setTxCell(row.querySelector('[data-field="tx"]'), swap.tx, round.simulated);
@@ -194,6 +231,19 @@ export function createRounds({ onRetry, getStock } = {}) {
   function decimalsFor(mint) {
     const stock = typeof getStock === 'function' ? getStock(mint) : null;
     return Number.isInteger(stock?.decimals) ? stock.decimals : 8;
+  }
+
+  /**
+   * The stock's Token-2022 scaledUiAmount multiplier. A wallet shows
+   * rawAmount * multiplier, so ignoring it would make the ledger disagree with
+   * the holder's own wallet. Falls back to 1 when the stock is not in the
+   * current top 20 any more, which is honest: raw base units are still shown
+   * in the cell's title either way.
+   */
+  function multiplierFor(mint) {
+    const stock = typeof getStock === 'function' ? getStock(mint) : null;
+    const m = Number(stock?.uiMultiplier);
+    return Number.isFinite(m) && m > 0 ? m : 1;
   }
 
   /**
@@ -246,9 +296,10 @@ export function createRounds({ onRetry, getStock } = {}) {
       row.querySelector('[data-field="symbol"]').textContent = transfer.symbol || truncAddr(transfer.mint);
 
       const decimals = decimalsFor(transfer.mint);
+      const uiMultiplier = multiplierFor(transfer.mint);
       const amountCell = row.querySelector('[data-field="amount"]');
-      amountCell.textContent = transfer.amountRaw ? fmtTokenAmount(transfer.amountRaw, decimals) : DASH;
-      if (transfer.amountRaw) amountCell.title = fmtTokenAmountExact(transfer.amountRaw, decimals, transfer.symbol || '');
+      amountCell.textContent = transfer.amountRaw ? fmtTokenAmount(transfer.amountRaw, decimals, { uiMultiplier }) : DASH;
+      if (transfer.amountRaw) amountCell.title = fmtTokenAmountExact(transfer.amountRaw, decimals, transfer.symbol || '', uiMultiplier);
 
       setStatus(row.querySelector('[data-field="status"]'), transfer.status);
       setTxCell(row.querySelector('[data-field="tx"]'), transfer.tx, round.simulated);
@@ -369,8 +420,10 @@ export function createRounds({ onRetry, getStock } = {}) {
         emptyTime.textContent = `${fmtTimeUtc(config.nextRoundAt)} UTC`;
         emptyTime.title = isoOf(config.nextRoundAt);
       }
-      const jitter = config?.rules?.jitterMin;
-      if (footNote && Number.isFinite(Number(jitter))) {
+      // num() and not Number(): Number(null) is 0, which would print
+      // "±null minutes" from a jitter the server never reported.
+      const jitter = num(config?.rules?.jitterMin);
+      if (footNote && jitter !== null) {
         footNote.textContent = `Times are UTC. The snapshot is taken at a random offset within ±${jitter} minutes of each mark.`;
       }
     },

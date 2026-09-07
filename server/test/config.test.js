@@ -146,8 +146,27 @@ test('rules object matches the contract', () => {
     intervalHours: 4,
     universeSize: 12,
     defaultBasketSize: 3,
+    // null means "no explicit basket configured": holders who never picked get
+    // the top `defaultBasketSize` split evenly.
+    defaultBasket: null,
   });
   assert.equal(Object.isFrozen(cfg.rules), true);
+});
+
+test('DEFAULT_BASKET is carried into rules, and a malformed one is rejected', () => {
+  assert.equal(buildConfig({ DEFAULT_BASKET: 'SPCXx:100' }).rules.defaultBasket, 'SPCXx:100');
+  assert.equal(buildConfig({ DEFAULT_BASKET: 'NVDAx:60,TSLAx:40' }).rules.defaultBasket, 'NVDAx:60,TSLAx:40');
+  assert.equal(buildConfig({ DEFAULT_BASKET: '' }).rules.defaultBasket, null);
+  assert.equal(buildConfig({}).rules.defaultBasket, null);
+
+  // A basket that does not total 100, repeats a ticker, or is unparseable must
+  // be reported as invalid rather than silently becoming a different allocation
+  // than the operator intended — this setting decides where real money goes.
+  for (const bad of ['SPCXx:90', 'SPCXx:60,SPCXx:40', 'SPCXx', 'SPCXx:abc', 'SPCXx:0,NVDAx:100']) {
+    assert.equal(buildConfig({ DEFAULT_BASKET: bad }).defaultBasketValid, false, `expected ${bad} to be invalid`);
+  }
+  assert.equal(buildConfig({ DEFAULT_BASKET: 'SPCXx:100' }).defaultBasketValid, true);
+  assert.equal(buildConfig({}).defaultBasketValid, true);
 });
 
 test('bad numeric env values fall back to the default instead of NaN', () => {

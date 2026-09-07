@@ -62,10 +62,23 @@ export function jitterFor(roundId, jitterMin) {
  * The next scheduled run: which mark, which round id, what jitter, and the wall
  * clock instant it fires. A negative jitter that has already passed does not
  * push the round into the past — it fires immediately at the mark instead.
+ *
+ * `afterMark` is the last mark this keeper actually handled, and the plan is
+ * always strictly after it. Without that, a negative jitter re-selects the mark
+ * it just ran: the 12:00 round fires at 11:53, finishes at 11:55, and the clock
+ * alone still says the next mark is 12:00 — so the keeper runs it again, and
+ * again, until the mark passes.
+ *
+ * @param {object} cfg
+ * @param {Date|number} [now]
+ * @param {Date|number|null} [afterMark] the last mark handled, exclusive
  */
-export function planNext(cfg, now = Date.now()) {
+export function planNext(cfg, now = Date.now(), afterMark = null) {
   const at = now instanceof Date ? now.getTime() : Number(now);
-  const mark = nextMark(cfg.intervalHours ?? 6, at);
+  const interval = cfg.intervalHours ?? 6;
+  const after = afterMark === null || afterMark === undefined ? null : afterMark instanceof Date ? afterMark.getTime() : Number(afterMark);
+  let mark = nextMark(interval, at);
+  if (after !== null && Number.isFinite(after) && mark.getTime() <= after) mark = nextMark(interval, after);
   const id = roundIdFor(mark);
   const jitter = jitterFor(id, cfg.roundJitterMin ?? 0);
   const fireAt = new Date(Math.max(mark.getTime() + jitter.ms, at));
@@ -99,6 +112,8 @@ export function start(deps = {}) {
     stopped: false,
     timer: null,
     next: null,
+    /** The last mark this keeper fired on. Every plan is strictly after it. */
+    lastMark: null,
     lastRoundId: null,
     lastStatus: null,
     lastFinishedAt: null,
@@ -151,7 +166,7 @@ export function start(deps = {}) {
 
   function schedule() {
     if (state.stopped) return;
-    const plan = planNext(cfg, now());
+    const plan = planNext(cfg, now(), state.lastMark);
     state.next = plan;
     const waitMs = Math.max(0, plan.fireAt.getTime() - now());
     // setTimeout tops out at ~24.8 days; a 6h interval is never near it, but a
@@ -166,7 +181,12 @@ export function start(deps = {}) {
   async function onTick() {
     if (state.stopped) return;
     const plan = state.next;
-    await execute({ scheduledAt: plan?.mark ?? new Date(now()), jitterMin: plan?.jitterMin ?? null, resume: true });
+    const mark = plan?.mark ?? new Date(now());
+    // Record the mark BEFORE running it. A round that fires early (negative
+    // jitter) and finishes before its own mark must not be selected again, and
+    // a round that throws must not be retried in a tight loop either.
+    state.lastMark = mark instanceof Date ? mark.getTime() : Number(mark);
+    await execute({ scheduledAt: mark, jitterMin: plan?.jitterMin ?? null, resume: true });
     schedule();
   }
 
@@ -175,6 +195,15 @@ export function start(deps = {}) {
     if (!state.enabled) {
       logger.warn?.(`keeper: disabled in ${cfg.mode} mode (no vault secret, no rounds)`);
       return;
+    }
+    try {
+      // A restart must not re-run a mark this keeper already handled: after a
+      // round that fired early, the clock alone would still point at it.
+      const latest = await db.latestRound?.();
+      const handled = latest?.scheduledAt ? Date.parse(latest.scheduledAt) : NaN;
+      if (Number.isFinite(handled)) state.lastMark = handled;
+    } catch (err) {
+      logger.warn?.(`keeper: could not read the last round's mark: ${err.message}`);
     }
     try {
       const unfinished = await db.unfinishedRound();
@@ -202,7 +231,7 @@ export function start(deps = {}) {
     /** ISO time of the next scheduled round, or null when the keeper is off. */
     nextRoundAt() {
       if (!state.enabled || state.stopped) return null;
-      return state.next ? state.next.fireAt.toISOString() : planNext(cfg, now()).fireAt.toISOString();
+      return state.next ? state.next.fireAt.toISOString() : planNext(cfg, now(), state.lastMark).fireAt.toISOString();
     },
     /** Run a round right now (admin route / CLI), outside the schedule. */
     runNow(extra = {}) {
@@ -211,7 +240,7 @@ export function start(deps = {}) {
     status() {
       // Between boot and the first schedule() there is no armed timer yet, but
       // the next round is still knowable — compute it rather than report null.
-      const next = state.next ?? (state.enabled && !state.stopped ? planNext(cfg, now()) : null);
+      const next = state.next ?? (state.enabled && !state.stopped ? planNext(cfg, now(), state.lastMark) : null);
       return {
         enabled: state.enabled,
         mode: cfg.mode,
@@ -226,6 +255,7 @@ export function start(deps = {}) {
         nextMark: next && !state.stopped ? next.mark.toISOString() : null,
         nextJitterMin: next && !state.stopped ? next.jitterMin : null,
         roundsRun: state.roundsRun,
+        lastMark: state.lastMark === null ? null : new Date(state.lastMark).toISOString(),
         lastRoundId: state.lastRoundId,
         lastStatus: state.lastStatus,
         lastFinishedAt: state.lastFinishedAt,
