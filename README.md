@@ -25,6 +25,14 @@ the site.
 
 ---
 
+## Live
+
+| | |
+|---|---|
+| Site | https://stockdrop-ten.vercel.app |
+| API | https://stockdrop-production.up.railway.app |
+| Vault | `769fv6KK6SAQ5FBAXdUZLdrppdHn5CqqgJBpFCLyf9up` |
+
 ## Status
 
 | | |
