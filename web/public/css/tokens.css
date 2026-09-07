@@ -1,0 +1,245 @@
+/* ==========================================================================
+   STOCKDROP — design tokens
+   Light is the primary theme. Every colour is defined once on bare :root,
+   then redefined (same names, different values) in two dark blocks:
+     1. @media (prefers-color-scheme: dark) guarded with :root:not([data-theme="light"])
+     2. :root[data-theme="dark"]                 so an explicit toggle wins both ways
+   Nothing outside this file may hardcode a hex value.
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* ---- surfaces & ink (light) ------------------------------------------ */
+  --paper:        #F4F5F7;   /* page background */
+  --paper-sunk:   #EDEFF2;   /* recessed strips: tape, table head, callouts */
+  --surface:      #FFFFFF;   /* panels */
+  --surface-2:    #FAFBFC;   /* nested panels, zebra rows */
+  --surface-3:    #F0F2F5;   /* hover on rows, chips */
+  --overlay:      rgba(11, 13, 16, 0.44);
+
+  --ink:          #0B0D10;   /* primary text */
+  --ink-2:        #3D4450;   /* secondary text */
+  --ink-3:        #667080;   /* labels, captions (AA on paper) */
+  --ink-4:        #98A1AE;   /* disabled, decorative only */
+  --ink-invert:   #F7F8FA;
+
+  /* ---- hairlines (no shadows anywhere) --------------------------------- */
+  --rule:         rgba(11, 13, 16, 0.10);
+  --rule-soft:    rgba(11, 13, 16, 0.06);
+  --rule-strong:  rgba(11, 13, 16, 0.20);
+
+  /* ---- accent: Solana green. <=5% of pixels. Fills and dots, not text. -- */
+  --accent:       #14F195;
+  --accent-hover: #0FD886;
+  --accent-press: #0BBE75;
+  --accent-ink:   #06231A;   /* text placed on top of --accent */
+  --accent-wash:  rgba(20, 241, 149, 0.14);
+  --accent-line:  rgba(20, 241, 149, 0.42);
+  --accent-text:  #0A7A55;   /* readable green text on light paper */
+
+  /* ---- Solana purple: wallet badge only -------------------------------- */
+  --purple:       #9945FF;
+  --purple-wash:  rgba(153, 69, 255, 0.12);
+  --purple-text:  #6D28C9;
+
+  /* ---- market direction (classic finance, not the accent) -------------- */
+  --up:           #0E9F6E;
+  --up-wash:      rgba(14, 159, 110, 0.10);
+  --down:         #D83A3A;
+  --down-wash:    rgba(216, 58, 58, 0.10);
+  --flat:         var(--ink-3);
+
+  /* ---- status ---------------------------------------------------------- */
+  --warn:         #A96A00;
+  --warn-wash:    rgba(169, 106, 0, 0.10);
+  --info:         #1F5FBF;
+  --info-wash:    rgba(31, 95, 191, 0.10);
+  --sim:          #6B4EC4;   /* "simulated" labelling */
+  --sim-wash:     rgba(107, 78, 196, 0.10);
+
+  /* ---- focus ----------------------------------------------------------- */
+  --focus-ring:   #0B0D10;
+  --focus-halo:   rgba(20, 241, 149, 0.55);
+
+  /* ---- skeleton -------------------------------------------------------- */
+  --skel:         rgba(11, 13, 16, 0.07);
+
+  /* ---- chart ink ------------------------------------------------------- */
+  --chart-grid:   rgba(11, 13, 16, 0.07);
+  --chart-axis:   var(--ink-3);
+  --chart-up:     var(--up);
+  --chart-down:   var(--down);
+  --chart-line:   var(--ink);
+
+  /* ---- type ------------------------------------------------------------ */
+  --font-ui:   "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono",
+               "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --fs-display: 2.5rem;    /* 40px — one display size only */
+  --fs-h2:      1.25rem;   /* 20px */
+  --fs-h3:      0.9375rem; /* 15px */
+  --fs-body:    0.90625rem;/* 14.5px */
+  --fs-sm:      0.8125rem; /* 13px — table body */
+  --fs-xs:      0.6875rem; /* 11px — eyebrow labels */
+  --fs-stat:    1.75rem;   /* 28px — hero stat numerals */
+  --fs-addr:    1.0625rem; /* 17px — vault address */
+
+  --lh-tight:   1.15;
+  --lh-snug:    1.35;
+  --lh-body:    1.55;
+
+  --ls-eyebrow: 0.09em;
+  --ls-tight:   -0.015em;
+
+  --fw-regular: 400;
+  --fw-medium:  500;
+  --fw-semi:    600;
+
+  /* ---- 8px spacing scale ----------------------------------------------- */
+  --s-0:  0;
+  --s-05: 4px;
+  --s-1:  8px;
+  --s-15: 12px;
+  --s-2:  16px;
+  --s-3:  24px;
+  --s-4:  32px;
+  --s-5:  40px;
+  --s-6:  48px;
+  --s-8:  64px;
+  --s-10: 80px;
+  --s-12: 96px;
+
+  /* ---- geometry -------------------------------------------------------- */
+  --radius-sm: 3px;
+  --radius:    5px;
+  --radius-lg: 8px;
+  --radius-pill: 999px;
+  --hairline: 1px;
+
+  --shell-max: 1280px;
+  --gutter:    var(--s-2);   /* 16 on phones, widened at the breakpoints */
+  --nav-h:     56px;
+  --tape-h:    38px;
+
+  /* ---- motion ---------------------------------------------------------- */
+  --dur-fast: 90ms;
+  --dur:      160ms;
+  --dur-slow: 260ms;
+  --ease:     cubic-bezier(0.22, 0.61, 0.36, 1);
+  --tape-speed: 64s;
+
+  /* ---- z-index ---------------------------------------------------------- */
+  --z-tape:    20;
+  --z-nav:     30;
+  --z-drawer:  60;
+  --z-toast:   80;
+}
+
+/* ---- dark: system preference (an explicit light choice wins) ------------ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --paper:        #0B0D10;
+    --paper-sunk:   #07090B;
+    --surface:      #111418;
+    --surface-2:    #161A1F;
+    --surface-3:    #1D2228;
+    --overlay:      rgba(0, 0, 0, 0.66);
+
+    --ink:          #E8EBEF;
+    --ink-2:        #B3BAC4;
+    --ink-3:        #8B94A0;
+    --ink-4:        #5E6773;
+    --ink-invert:   #0B0D10;
+
+    --rule:         rgba(255, 255, 255, 0.11);
+    --rule-soft:    rgba(255, 255, 255, 0.06);
+    --rule-strong:  rgba(255, 255, 255, 0.22);
+
+    --accent-hover: #2BF5A3;
+    --accent-press: #12D384;
+    --accent-wash:  rgba(20, 241, 149, 0.12);
+    --accent-line:  rgba(20, 241, 149, 0.38);
+    --accent-text:  #35E3A0;
+
+    --purple-wash:  rgba(153, 69, 255, 0.18);
+    --purple-text:  #C08BFF;
+
+    --up:           #21C08A;
+    --up-wash:      rgba(33, 192, 138, 0.12);
+    --down:         #F0605C;
+    --down-wash:    rgba(240, 96, 92, 0.12);
+
+    --warn:         #E0A64B;
+    --warn-wash:    rgba(224, 166, 75, 0.12);
+    --info:         #6FA8F5;
+    --info-wash:    rgba(111, 168, 245, 0.12);
+    --sim:          #A48BF0;
+    --sim-wash:     rgba(164, 139, 240, 0.14);
+
+    --focus-ring:   #FFFFFF;
+
+    --skel:         rgba(255, 255, 255, 0.07);
+
+    --chart-grid:   rgba(255, 255, 255, 0.08);
+    --chart-line:   var(--ink);
+  }
+}
+
+/* ---- dark: explicit toggle (wins over a light system preference) -------- */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --paper:        #0B0D10;
+  --paper-sunk:   #07090B;
+  --surface:      #111418;
+  --surface-2:    #161A1F;
+  --surface-3:    #1D2228;
+  --overlay:      rgba(0, 0, 0, 0.66);
+
+  --ink:          #E8EBEF;
+  --ink-2:        #B3BAC4;
+  --ink-3:        #8B94A0;
+  --ink-4:        #5E6773;
+  --ink-invert:   #0B0D10;
+
+  --rule:         rgba(255, 255, 255, 0.11);
+  --rule-soft:    rgba(255, 255, 255, 0.06);
+  --rule-strong:  rgba(255, 255, 255, 0.22);
+
+  --accent-hover: #2BF5A3;
+  --accent-press: #12D384;
+  --accent-wash:  rgba(20, 241, 149, 0.12);
+  --accent-line:  rgba(20, 241, 149, 0.38);
+  --accent-text:  #35E3A0;
+
+  --purple-wash:  rgba(153, 69, 255, 0.18);
+  --purple-text:  #C08BFF;
+
+  --up:           #21C08A;
+  --up-wash:      rgba(33, 192, 138, 0.12);
+  --down:         #F0605C;
+  --down-wash:    rgba(240, 96, 92, 0.12);
+
+  --warn:         #E0A64B;
+  --warn-wash:    rgba(224, 166, 75, 0.12);
+  --info:         #6FA8F5;
+  --info-wash:    rgba(111, 168, 245, 0.12);
+  --sim:          #A48BF0;
+  --sim-wash:     rgba(164, 139, 240, 0.14);
+
+  --focus-ring:   #FFFFFF;
+
+  --skel:         rgba(255, 255, 255, 0.07);
+
+  --chart-grid:   rgba(255, 255, 255, 0.08);
+  --chart-line:   var(--ink);
+}
+
+/* Explicit light choice while the system is dark: bare :root already holds
+   the light values, so only color-scheme needs restating. */
+:root[data-theme="light"] { color-scheme: light; }

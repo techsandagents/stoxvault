@@ -1,0 +1,25 @@
+{
+  "name": "stockdrop-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "API + keeper: swaps vault SOL into top-20 xStocks every 6h and distributes to holders by their picks.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test test/",
+    "round": "node scripts/run-round.mjs",
+    "gen-vault": "node scripts/gen-vault.mjs",
+    "rehearse": "node scripts/rehearse.mjs"
+  },
+  "dependencies": {
+    "@solana/spl-token": "0.4.13",
+    "@solana/web3.js": "1.98.4",
+    "cors": "2.8.5",
+    "express": "4.21.2",
+    "pg": "8.16.3"
+  }
+}

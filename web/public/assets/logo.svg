@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="STOCKDROP">
+  <title>STOCKDROP</title>
+  <style>
+    .candle { fill: #0B0D10; }
+    .drop   { fill: #14F195; }
+    @media (prefers-color-scheme: dark) { .candle { fill: #E8EBEF; } }
+  </style>
+  <!-- three ascending candlesticks: wick + body -->
+  <rect class="candle" x="6.5"  y="13" width="1" height="16" rx="0.5"/>
+  <rect class="candle" x="4"    y="17" width="6"  height="8"  rx="1"/>
+
+  <rect class="candle" x="15.5" y="8"  width="1" height="17" rx="0.5"/>
+  <rect class="candle" x="13"   y="11" width="6"  height="10" rx="1"/>
+
+  <rect class="drop"   x="24.5" y="2"  width="1" height="13" rx="0.5"/>
+  <rect class="drop"   x="22"   y="4"  width="6"  height="9"  rx="1"/>
+  <!-- the drop: the last candle falls out of the tape -->
+  <path class="drop" d="M22 18h6l-3 5z"/>
+</svg>

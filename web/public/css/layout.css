@@ -1,0 +1,369 @@
+/* ==========================================================================
+   STOCKDROP — shell, grid, section scaffolding, responsive rules
+   Breakpoints: 375 (base / small phone) → 768 (tablet) → 1280 (full desk)
+   Mobile-first: the base rules ARE the 375px layout.
+   ========================================================================== */
+
+/* ---- shell -------------------------------------------------------------- */
+.shell {
+  width: 100%;
+  max-width: var(--shell-max);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+.shell--flush { padding-inline: 0; }
+
+/* 12-column grid. Children opt in with .col-N (N of 12 at >=1280,
+   collapsing at the breakpoints below). */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--s-3);
+}
+.col-3  { grid-column: span 12; }
+.col-4  { grid-column: span 12; }
+.col-5  { grid-column: span 12; }
+.col-6  { grid-column: span 12; }
+.col-7  { grid-column: span 12; }
+.col-8  { grid-column: span 12; }
+.col-9  { grid-column: span 12; }
+.col-12 { grid-column: span 12; }
+
+/* ---- header ------------------------------------------------------------- */
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-nav);
+  background: var(--surface);
+  border-bottom: var(--hairline) solid var(--rule);
+}
+.nav {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  height: var(--nav-h);
+}
+.nav__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  flex: 0 0 auto;
+  color: var(--ink);
+}
+.nav__logo { width: 22px; height: 22px; }
+.nav__wordmark {
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+  font-weight: var(--fw-semi);
+  letter-spacing: 0.02em;
+}
+.nav__links {
+  display: none;              /* hidden < 768, section nav lives in the page */
+  align-items: center;
+  gap: var(--s-2);
+  margin-left: var(--s-3);
+  min-width: 0;
+}
+.nav__link {
+  font-size: var(--fs-sm);
+  color: var(--ink-3);
+  padding: var(--s-05) 0;
+  border-bottom: 2px solid transparent;
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.nav__link:hover { color: var(--ink); }
+.nav__link[aria-current="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+.nav__spacer { flex: 1 1 auto; }
+.nav__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  flex: 0 0 auto;
+}
+/* The status pill is hidden on the narrowest phones. The selector is scoped to
+   .nav so it beats `.pill { display: inline-flex }` from components.css. */
+.nav .nav__status { display: none; }
+
+/* ---- ticker tape -------------------------------------------------------- */
+.tape {
+  position: sticky;
+  top: var(--nav-h);
+  z-index: var(--z-tape);
+  height: var(--tape-h);
+  background: var(--paper-sunk);
+  border-bottom: var(--hairline) solid var(--rule);
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+}
+.tape__viewport {
+  position: relative;
+  flex: 1 1 auto;
+  overflow: hidden;
+  min-width: 0;
+}
+.tape__control {
+  flex: 0 0 auto;
+  border-left: var(--hairline) solid var(--rule);
+}
+
+/* ---- sections ----------------------------------------------------------- */
+.section {
+  padding-block: var(--s-6);
+  border-top: var(--hairline) solid var(--rule);
+}
+.section:first-of-type { border-top: 0; }
+.section--tight { padding-block: var(--s-4); }
+.section__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-2);
+  margin-bottom: var(--s-3);
+}
+.section__title { font-size: var(--fs-h2); }
+.section__note {
+  font-size: var(--fs-sm);
+  color: var(--ink-3);
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.section__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  flex: 0 0 auto;
+}
+
+/* ---- hero --------------------------------------------------------------- */
+.hero { padding-block: var(--s-5) var(--s-5); }
+.hero__title {
+  font-size: clamp(1.75rem, 7vw, var(--fs-display));
+  max-width: 20ch;
+}
+.hero__sub { margin-top: var(--s-2); }
+.hero__meta {
+  margin-top: var(--s-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1) var(--s-2);
+}
+.hero__stats {
+  margin-top: var(--s-4);
+  display: grid;
+  grid-template-columns: 1fr;
+  border: var(--hairline) solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+/* ---- basket configurator ------------------------------------------------ */
+.basket {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s-3);
+  align-items: start;
+}
+.basket__side { display: grid; gap: var(--s-3); }
+
+/* ---- vault -------------------------------------------------------------- */
+.vault {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s-3);
+  align-items: start;
+}
+
+/* ---- how it works ------------------------------------------------------- */
+.steps {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  border: var(--hairline) solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  overflow: hidden;
+  counter-reset: step;
+}
+
+/* ---- footer ------------------------------------------------------------- */
+.site-footer {
+  border-top: var(--hairline) solid var(--rule);
+  background: var(--surface);
+  padding-block: var(--s-5) var(--s-6);
+  margin-top: var(--s-6);
+}
+.foot {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s-4);
+}
+.foot__disclaimers { display: grid; gap: var(--s-15); max-width: 76ch; }
+.foot__disclaimer {
+  font-size: var(--fs-sm);
+  color: var(--ink-3);
+  line-height: 1.5;
+}
+.foot__bottom {
+  margin-top: var(--s-4);
+  padding-top: var(--s-2);
+  border-top: var(--hairline) solid var(--rule);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-3);
+  align-items: center;
+  font-size: var(--fs-xs);
+  color: var(--ink-4);
+}
+
+/* ==========================================================================
+   >= 768px — tablet
+   ========================================================================== */
+@media (min-width: 768px) {
+  :root { --gutter: var(--s-4); }
+
+  .nav .nav__status { display: inline-flex; }
+
+  .col-6 { grid-column: span 6; }
+  .col-8 { grid-column: span 12; }
+  .col-4 { grid-column: span 6; }
+  .col-3 { grid-column: span 6; }
+
+  .hero__stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+  .basket { grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); }
+  .vault  { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); }
+  .steps  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+  .foot { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+}
+
+/* ==========================================================================
+   >= 1024px — the nav gets its links back
+   ========================================================================== */
+@media (min-width: 1024px) {
+  .nav__links { display: flex; }
+  .hero__stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* ==========================================================================
+   >= 1280px — full desk
+   ========================================================================== */
+@media (min-width: 1280px) {
+  .col-3  { grid-column: span 3; }
+  .col-4  { grid-column: span 4; }
+  .col-5  { grid-column: span 5; }
+  .col-6  { grid-column: span 6; }
+  .col-7  { grid-column: span 7; }
+  .col-8  { grid-column: span 8; }
+  .col-9  { grid-column: span 9; }
+
+  .section { padding-block: var(--s-8); }
+  .hero { padding-block: var(--s-8) var(--s-6); }
+  .hero__title { font-size: var(--fs-display); }
+
+  .basket { grid-template-columns: minmax(0, 1fr) 380px; gap: var(--s-4); }
+  .vault  { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: var(--s-4); }
+}
+
+/* ==========================================================================
+   <= 767px — table→cards, dense-mode trims
+   The Top-20 and holdings tables carry .table--cards in the markup; the
+   transformation is pure CSS and needs no JS.
+   ========================================================================== */
+@media (max-width: 767px) {
+  /* Nav has to fit brand + two icon buttons + connect inside 375px. */
+  .nav { gap: var(--s-05); }
+  .nav__wordmark { font-size: 0.875rem; }
+  .nav__tools .btn { height: 30px; }
+  .nav__tools .btn--icon { width: 30px; }
+  .nav__tools #btn-connect { padding-inline: var(--s-15); font-size: var(--fs-xs); }
+
+  .section { padding-block: var(--s-5); }
+  .section__head { margin-bottom: var(--s-2); }
+
+  /* Selectors are doubled (.table.table--cards) so they outrank the plain
+     .table rules in components.css, which is loaded after this file. */
+  .table.table--cards { min-width: 0; display: block; width: auto; }
+
+  .table.table--cards tr,
+  .table.table--cards th,
+  .table.table--cards td { display: block; width: auto; }
+
+  .table.table--cards thead { display: none; }
+  .table.table--cards tbody { border: 0; }
+
+  /* tbody visibility still belongs to the pane state machine — never set
+     `display` on a tbody here, only tell the machine what "shown" means. */
+  .table.table--cards .pane-as-tbody { --pane-display: block; }
+
+  .table.table--cards tbody tr {
+    border: var(--hairline) solid var(--rule);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    padding: var(--s-15);
+    margin-bottom: var(--s-1);
+  }
+  .table.table--cards tbody tr:hover { background: var(--surface); }
+
+  .table.table--cards tbody td {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--s-2);
+    padding: var(--s-05) 0;
+    border: 0;
+    text-align: left;
+    height: auto;
+  }
+  .table.table--cards tbody td::before {
+    content: attr(data-label);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semi);
+    letter-spacing: var(--ls-eyebrow);
+    text-transform: uppercase;
+    color: var(--ink-3);
+    flex: 0 0 auto;
+  }
+  .table.table--cards tbody td[data-label=""]::before,
+  .table.table--cards tbody td:not([data-label])::before { content: none; }
+
+  /* The identity cell becomes the card header: no label, full width. */
+  .table.table--cards tbody td[data-cell="identity"] {
+    justify-content: flex-start;
+    padding-bottom: var(--s-1);
+    margin-bottom: var(--s-1);
+    border-bottom: var(--hairline) solid var(--rule-soft);
+  }
+  .table.table--cards tbody td[data-cell="identity"]::before { content: none; }
+
+  .table.table--cards tbody td[data-cell="spark"] { padding-top: var(--s-1); }
+  .table.table--cards tbody td[data-cell="spark"] .spark { width: 100%; }
+
+  /* Expand affordance sits inline on cards. */
+  .table.table--cards tbody td[data-cell="expand"] { justify-content: flex-end; }
+
+  /* Skeleton rows keep the card silhouette. */
+  .table.table--cards tbody tr.skel-row td { padding: var(--s-05) 0; }
+
+  /* A full-width empty/error cell is not a card: it drops the card chrome
+     and stays block-level so the copy can wrap normally. */
+  .table.table--cards tbody tr.state-row {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+  }
+  .table.table--cards tbody td[data-cell="state"] {
+    display: block;
+    padding: 0;
+  }
+  .table.table--cards tbody td[data-cell="state"]::before { content: none; }
+}
