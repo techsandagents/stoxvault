@@ -12,18 +12,20 @@
 <!-- One-line switch for the API host. js/config.js reads this. -->
 <meta name="api-base" content="https://stockdrop-production.up.railway.app">
 
-<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/assets/favicon.svg">
+<link rel="icon" href="/assets/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="/assets/favicon-512.png" sizes="512x512" type="image/png">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
 
 <meta property="og:type" content="website">
 <meta property="og:title" content="STOXVAULT — your memecoin buys you Wall Street">
 <meta property="og:description" content="Creator fees buy real tokenised stocks every 6 hours and send them to holders. You pick the stocks.">
-<meta property="og:image" content="/assets/logo.svg">
+<meta property="og:image" content="/assets/favicon-512.png">
 <meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="/assets/favicon-512.png">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap">
 
 <link rel="stylesheet" href="/css/tokens.css">
 <link rel="stylesheet" href="/css/base.css">
@@ -43,15 +45,7 @@
   <div class="shell">
     <nav class="nav" aria-label="Primary">
       <a class="nav__brand" href="#main" aria-label="STOXVAULT home">
-        <svg class="nav__logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-          <rect x="6.5" y="13" width="1" height="16" rx="0.5" fill="currentColor"/>
-          <rect x="4" y="17" width="6" height="8" rx="1" fill="currentColor"/>
-          <rect x="15.5" y="8" width="1" height="17" rx="0.5" fill="currentColor"/>
-          <rect x="13" y="11" width="6" height="10" rx="1" fill="currentColor"/>
-          <rect x="24.5" y="2" width="1" height="13" rx="0.5" fill="var(--accent)"/>
-          <rect x="22" y="4" width="6" height="9" rx="1" fill="var(--accent)"/>
-          <path d="M22 18h6l-3 5z" fill="var(--accent)"/>
-        </svg>
+        <img class="nav__logo" src="/assets/logo-mark.png" width="28" height="28" alt="" aria-hidden="true" decoding="async">
         <span class="nav__wordmark">STOXVAULT</span>
       </a>
 
@@ -484,18 +478,7 @@
         </div>
       </div>
 
-      <div class="panel">
-        <div class="panel__head"><h3 class="panel__title">Rules</h3></div>
-        <div class="panel__body">
-          <ul class="rules-list">
-            <li>Between <span id="rule-picks-range">2 and 5</span> stocks.</li>
-            <li>Each stock <span id="rule-pct-range">10–60%</span>, whole numbers, summing to 100%.</li>
-            <li>Only the current top <span id="rule-universe-size">20</span> are selectable. Re-ranked every round.</li>
-            <li>Hold at least <span id="rule-eligible-pct">0.1%</span> of supply at snapshot to receive a drop.</li>
-            <li>Changes apply from the next snapshot onward.</li>
-          </ul>
-        </div>
-      </div>
+      
     </div>
   </div>
 </section>
@@ -1086,45 +1069,189 @@
 <section class="shell section" id="how" aria-labelledby="how-title">
   <div class="section__head">
     <h2 class="section__title" id="how-title">How it works</h2>
-    <p class="section__note">Six steps, every six hours. No lock-ups, no claiming, no staking.</p>
+    <p class="section__note">In plain English. No jargon, no homework. About two minutes to read.</p>
+  </div>
+
+  <div class="callout callout--info how__intro">
+    <p class="callout__title">The whole idea, in one breath</p>
+    <p class="callout__text">
+      You hold our coin. The coin earns money whenever people trade it. Every
+      <span class="how__interval" data-interval-hours>6</span> hours we take that money, buy real
+      company stocks with it, and put those stocks straight into your wallet. You choose which
+      companies. You never click anything to collect them.
+    </p>
   </div>
 
   <ol class="steps">
     <li class="step">
       <span class="step__num">STEP 1</span>
-      <h3 class="step__title">Fees land in the vault</h3>
-      <p class="step__text">Creator fees from the token accumulate as SOL in one public wallet. Its balance minus a small fee reserve is the pool.</p>
+      <h3 class="step__title">The coin earns money into one wallet</h3>
+      <p class="step__text">
+        Every time someone buys or sells the coin, a small fee is created. All of it goes into a
+        single wallet we call <strong class="strong">the vault</strong>. Think of it as a jar on a
+        shelf that fills up on its own. Nobody takes money out of the jar for anything else.
+      </p>
     </li>
+
     <li class="step" id="step-snapshot">
       <span class="step__num">STEP 2</span>
-      <!-- Both of these are rewritten from /api/config.rules (antiCheat,
-           openSnapshotWindowMin) so the prose cannot drift from the keeper.
-           The shipped text describes the single-snapshot rule, which is what a
-           server with the anti-cheat rule off actually does. -->
+      <!-- Title and text are rewritten from /api/config.rules (antiCheat,
+           openSnapshotWindowMin) so this can never describe a rule the keeper is
+           not running. The shipped wording is the single-snapshot rule, which is
+           exactly what a server with anti-cheat switched off does. -->
       <h3 class="step__title" id="step-snapshot-title">A snapshot is taken</h3>
-      <p class="step__text" id="step-snapshot-text">Every <span id="step-interval">6</span> hours, at a random offset within ±10 minutes of the mark, so the exact moment cannot be gamed.</p>
+      <p class="step__text" id="step-snapshot-text">
+        Every <span id="step-interval">6</span> hours, at a random offset within ±10 minutes of the
+        mark, so the exact moment cannot be gamed.
+      </p>
     </li>
+
     <li class="step">
       <span class="step__num">STEP 3</span>
-      <h3 class="step__title">Holders are filtered</h3>
-      <p class="step__text">Wallets holding at least <span id="step-eligible-pct">0.1%</span> of supply are eligible. Liquidity pools, the vault and listed exclusions are removed.</p>
+      <h3 class="step__title">We check who was holding, and how much</h3>
+      <p class="step__text">
+        To get a drop you need at least <span id="step-eligible-pct">0.1%</span> of all the coins
+        that exist. Everyone who clears that line shares the jar, and
+        <strong class="strong">bigger holders get a bigger slice</strong> — hold twice as much as
+        someone else and you get twice as much as they do. Trading pools, the vault itself and a
+        short published list of project wallets are taken out first, so they cannot take a slice
+        that belongs to real holders.
+      </p>
     </li>
+
     <li class="step">
       <span class="step__num">STEP 4</span>
-      <h3 class="step__title">Your picks become demand</h3>
-      <p class="step__text">Each holder's balance is spread across their chosen stocks. No saved basket means the default: <span data-default-basket>the top five by market cap, 20% each</span>.</p>
+      <h3 class="step__title">Your slice is spent on the stocks you chose</h3>
+      <p class="step__text">
+        Up in <a class="link" href="#basket">Your basket</a> you pick between two and five companies
+        and say how much of your slice each one gets. Never chose anything? That is completely fine.
+        You get the standard basket instead, which is currently
+        <span data-default-basket>the top five by market cap, 20% each</span>.
+      </p>
     </li>
+
     <li class="step">
       <span class="step__num">STEP 5</span>
-      <h3 class="step__title">One swap per stock</h3>
-      <p class="step__text">The pool is split by total demand and routed through Jupiter, one SOL-to-stock swap per stock, with a slippage cap. A failed swap keeps its SOL for the next round.</p>
+      <h3 class="step__title">Everyone's orders are added up and bought once</h3>
+      <p class="step__text">
+        We do not place a separate order for every person — that would waste a lot of money on fees.
+        We add up what everyone asked for, buy each company
+        <strong class="strong">once, in one big order</strong>, and then split what arrives back out
+        by who asked for what. You get exactly the same amount either way, it just costs far less to
+        do it.
+      </p>
     </li>
+
     <li class="step">
       <span class="step__num">STEP 6</span>
-      <h3 class="step__title">Stocks land in your wallet</h3>
-      <p class="step__text">Tokens are transferred directly to each holder. The project pays the token-account rent. Amounts too small to send are carried into the next round.</p>
+      <h3 class="step__title">The stocks appear in your wallet</h3>
+      <p class="step__text">
+        They are sent directly to you. There is no button to press, no page to come back to, no
+        deadline to miss. Open your wallet and they are simply there, and they are yours to hold or
+        sell whenever you like. Then the jar starts filling again and the whole thing repeats.
+      </p>
     </li>
   </ol>
+
+  <div class="how__panels">
+    <div class="panel">
+      <div class="panel__head"><h3 class="panel__title">A worked example</h3></div>
+      <div class="panel__body">
+        <p class="how__lede">
+          Say the jar has <strong class="strong">10 SOL</strong> in it, and only two people qualify
+          this round.
+        </p>
+        <ul class="how__list">
+          <li>
+            <strong class="strong">Maya</strong> holds 30 million coins and picked
+            <em>Tesla 60% / Nvidia 40%</em>.
+          </li>
+          <li>
+            <strong class="strong">Sam</strong> holds 10 million coins and never picked anything.
+          </li>
+        </ul>
+        <p class="how__lede">
+          Maya holds three quarters of the qualifying coins, so three quarters of the jar,
+          <strong class="strong">7.5 SOL</strong>, is spent on her behalf: 4.5 SOL of Tesla and 3 SOL
+          of Nvidia. Sam gets the other <strong class="strong">2.5 SOL</strong>, spent on the standard
+          basket. Both wake up to real stock in their wallet, and the jar starts over.
+        </p>
+        <p class="how__fine">
+          Numbers are rounded for the example. Real rounds are worked out to the smallest unit, and
+          every round is published in the <a class="link" href="#rounds">ledger</a> so you can check
+          the arithmetic yourself.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head"><h3 class="panel__title">Questions people actually ask</h3></div>
+      <div class="panel__body panel__body--flush">
+        <dl class="faq">
+          <dt class="faq__q">Do I have to claim anything?</dt>
+          <dd class="faq__a">
+            No. Nothing to click, nothing to sign, no deadline. The stocks are sent to you.
+          </dd>
+
+          <dt class="faq__q">I bought today and got nothing. Why?</dt>
+          <dd class="faq__a">
+            You have to hold for a whole round, start to finish. We check twice: once near the start
+            and once at the end, and you are paid on the smaller of the two. Buying halfway through
+            means you were not there at the start, so that round pays you nothing.
+            <strong class="strong">Your first drop is the next one</strong>, and it arrives
+            automatically.
+          </dd>
+
+          <dt class="faq__q">What if I sell before the drop?</dt>
+          <dd class="faq__a">
+            Then you get nothing for that round. That is the point of checking twice: it stops people
+            buying minutes before a drop, taking a share, and selling straight after at the expense of
+            everyone who actually held.
+          </dd>
+
+          <dt class="faq__q">What if I never pick any stocks?</dt>
+          <dd class="faq__a">
+            Nothing bad happens. You still get paid, using the standard basket:
+            <span data-default-basket>the top five by market cap, 20% each</span>. Picking is
+            optional, always.
+          </dd>
+
+          <dt class="faq__q">Does connecting my wallet cost me anything, or let you take my coins?</dt>
+          <dd class="faq__a">
+            No to both. Connecting asks you to sign one short message, which is just a way of proving
+            the wallet is yours. It is <strong class="strong">not a transaction</strong>. It costs
+            nothing, moves nothing, and gives us no permission over anything you hold.
+          </dd>
+
+          <dt class="faq__q">Are there fees taken out of my drop?</dt>
+          <dd class="faq__a">
+            No. Holding a new kind of stock costs a tiny one-off deposit on Solana, and
+            <strong class="strong">the project pays that for you</strong> rather than taking it out of
+            what you receive.
+          </dd>
+
+          <dt class="faq__q">Can I change my picks later?</dt>
+          <dd class="faq__a">
+            Any time. A change applies from the next round onward, never to one already under way.
+          </dd>
+
+          <dt class="faq__q">What if a company I picked drops out of the top 20?</dt>
+          <dd class="faq__a">
+            Its share is spread across your other picks for that round, so nothing is lost or left
+            unspent. The site flags it so you can choose a replacement.
+          </dd>
+
+          <dt class="faq__q">Am I really buying shares?</dt>
+          <dd class="faq__a">
+            Not quite, and this part matters. You receive
+            <strong class="strong">tokenised stock issued by Backed Finance</strong>, which tracks the
+            company's price. It is not the same as owning a share through a broker: no voting, and you
+            are trusting the issuer. Their price can fall as well as rise, like any stock.
+          </dd>
+        </dl>
+      </div>
+    </div>
+  </div>
 </section>
 
 </main>

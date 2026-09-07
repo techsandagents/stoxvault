@@ -50,12 +50,21 @@
   flex: 0 0 auto;
   color: var(--ink);
 }
-.nav__logo { width: 22px; height: 22px; }
+/* The mark is a raster PNG with a transparent ground and a soft glow baked in,
+   so it sits on both themes without a plate behind it. object-fit keeps it
+   undistorted if the box is ever changed. */
+.nav__logo {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  display: block;
+  flex: 0 0 auto;
+}
 .nav__wordmark {
   font-family: var(--font-mono);
   font-size: 0.9375rem;
-  font-weight: var(--fw-semi);
-  letter-spacing: 0.02em;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.04em;
 }
 .nav__links {
   display: none;              /* hidden < 768, section nav lives in the page */
@@ -66,7 +75,11 @@
 }
 .nav__link {
   font-size: var(--fs-sm);
-  color: var(--ink-3);
+  /* Bolder and a step darker than before: at 13px in a dense header the old
+     regular weight on the muted ink read as disabled rather than clickable. */
+  font-weight: var(--fw-semi);
+  letter-spacing: 0.01em;
+  color: var(--ink-2);
   padding: var(--s-05) 0;
   border-bottom: 2px solid transparent;
   transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);

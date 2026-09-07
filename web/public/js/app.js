@@ -19,6 +19,7 @@ import { createDemand } from './ui/demand.js';
 import { toast, copyToClipboard } from './ui/toast.js';
 import { coinButtonState, snapshotRuleCopy } from './rules.js';
 import {
+  num,
   fmtSol,
   fmtUsd,
   fmtInt,
@@ -255,6 +256,17 @@ function renderFooterApi() {
  * be a lie in the one place the reader has no way to check. So the page states
  * what the server reports, not what was true when the HTML was written.
  */
+/**
+ * Fill every `[data-interval-hours]` span with the round interval the server
+ * reports. Separate from `#step-interval`, which `renderSnapshotRule` recreates
+ * each time it rewrites step 2 — two elements cannot share that id.
+ */
+function renderIntervalHours(config) {
+  const hours = num(config?.intervalHours) ?? num(config?.rules?.intervalHours);
+  if (hours === null) return;
+  for (const el of document.querySelectorAll('[data-interval-hours]')) el.textContent = String(hours);
+}
+
 function renderDefaultBasket(config) {
   const spans = document.querySelectorAll('[data-default-basket]');
   if (!spans.length) return;
@@ -432,6 +444,7 @@ async function loadConfig({ toastOnError = false } = {}) {
     renderToken(config);
     renderCoinButton(config);
     renderDefaultBasket(config);
+    renderIntervalHours(config);
     // Before basket.renderConfig: it writes the interval into the
     // `#step-interval` span this rewrite re-creates.
     renderSnapshotRule(config);
