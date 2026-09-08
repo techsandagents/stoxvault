@@ -62,10 +62,7 @@ a header with a tab bar and five `role="tabpanel"` sections.
 | Old | New | Note |
 |---|---|---|
 | `#nav-links` (anchor nav) | `#tab-bar` | now a real `role="tablist"`; see §2 |
-| `#hero-stats` (state owner for 4 stats) | `#card-vault`, `#card-round`, `#card-holders` | the hero split into three Overview cards, **each owning its own state** |
-| `#stat-vault-sol` | `#vault-balance-sol` | one id for the vault balance now, not two |
-| `#stat-vault-usd` | `#vault-balance-usd` | same |
-| `#vault-figures` | still exists, **no longer a state owner** | it is just the `<p class="numeral">` wrapper. `#card-vault` owns the state |
+| `#hero-stats` (state owner for 4 stats) | `#card-round`, `#card-holders` | the hero split into Overview cards, **each owning its own state** |
 | `#stat-distributed`, `#stat-rounds-count` | same ids, moved into the **Rounds** panel head | they describe the ledger, so they live with it |
 | `#stat-eligible-wallets`, `#stat-pref-wallets` | same ids, moved into `#card-holders` | |
 | `#basket-panel` | removed | the basket right column is a `.card`, no id needed |
@@ -85,15 +82,18 @@ a header with a tab bar and five `role="tabpanel"` sections.
 | mcap / liquidity / 7-day sparkline **columns** in `#tpl-stock-row` | the frames' row is tick · ticker · rank · price · 24h. Those three numbers still exist — in the stock drawer (`#drawer-mcap`, `#drawer-liquidity`) |
 | `#btn-drawer-add` still exists | but the row-level "Add" button is gone; the tick replaces it |
 | `.pill` in the header | `#status-pill` moved into `.idstrip` on Overview |
+| **the whole vault card** — `#card-vault`, `#vault-figures`, `#vault-balance-sol`, `#vault-balance-usd`, `#vault-reserve`, `#vault-progress`, `#vault-progress-fill`, `#vault-pool`, `#vault-min-pool`, `#vault-holdings-table` and its four panes, `#vault-holdings-body`, `#vault-holdings-count`, `#vault-updated`, `#vault-error-text`, `#btn-vault-retry`, `#tpl-holding-row` | the balance is not published any more (see §5). The vault itself is still real and the How-it-works copy still explains it — only the live figures are gone |
+| `#proj-pool` (the "Pool now" row in the projection) | same reason: it is the vault balance minus the reserve, so leaving it would republish the number the rest of the card stopped showing. `#proj-share` stays — a percentage of the pool does not reveal its size |
+| `ui/vault.js` and `api.getVault()` | nothing calls `/api/vault` from the browser now, and no poller asks for it. The endpoint is untouched on the server |
 
 ### Added
 
-`#tab-bar` and the five tabs · `#card-vault` / `#card-round` / `#card-holders`
-· `#vault-progress` / `#vault-progress-fill` · `#round-ring` / `#round-ring-arc`
+`#tab-bar` and the five tabs · `#card-round` / `#card-holders`
+· `#round-ring` / `#round-ring-arc`
 / `#round-progress-pct` / `#round-progress-label` · `#round-snapshot` and its
 parts · `#stat-your-share` · `#holders-threshold` / `#holders-note` ·
 `#overview-eyebrow` · `#arrivals` and `#tpl-arrival-row` · `#rules-list` and
-`#rule-*` · `#btn-vault-retry` / `#btn-round-retry` / `#btn-holders-retry` ·
+`#rule-*` · `#btn-round-retry` / `#btn-holders-retry` ·
 `#basket-total-row` · `.tick` inside `#tpl-stock-row`.
 
 ---
@@ -127,17 +127,15 @@ Two rules you must respect:
 **Inline value skeletons.** Single numbers carry `.skel-text` and are masked
 while the nearest `[data-state]` ancestor is `loading`. Never strip `.skel-text`.
 
-Nesting is fine and is used: `#vault-holdings-table` owns its own state inside
-`#card-vault`'s ready pane, so the holdings list can fail on its own.
+Nesting is fine and is used: `.round-detail__inner` owns its own state inside a
+row of `#rounds-body`, so one round's detail can fail on its own.
 
 Containers that own a state, and what "ready" means for each:
 
 | Container | ready shows |
 |---|---|
-| `#card-vault` | the vault figures + progress bar + holdings block |
 | `#card-round` | the countdown, schedule line and progress ring |
 | `#card-holders` | the eligible-wallet numeral and the two figures under it |
-| `#vault-holdings-table` | `<tbody id="vault-holdings-body">` |
 | `#tape-viewport` | `#tape-track` |
 | `#stocks-table` | `<tbody id="stocks-body">` |
 | `#basket-picks` | `#basket-picks-list` |
@@ -202,7 +200,8 @@ function selectTab(tab) {
   Do it with `history.replaceState`, never `location.hash =` (that would jump
   the page). An unknown hash falls back to Overview.
 - The panels are `hidden`, not unmounted. Data for a hidden panel still loads —
-  the boot order in §14 does not change.
+  the boot order in §18 does not change — but the work that *draws* it stops
+  while it is offscreen. See "What a hidden panel stops doing" in §18.
 
 **In-prose tab jumps.** The How-it-works copy contains
 `<button class="link linkbtn" data-tab-link="basket">` and
@@ -238,7 +237,7 @@ are in the footer (§13).
 
 ## 4. Overview — identity strip
 
-Above the three cards, `.view__head` carries the honest token identity.
+Above the two cards, `.view__head` carries the honest token identity.
 
 | id | pre-launch text (already in the markup) | post-launch |
 |---|---|---|
@@ -256,33 +255,25 @@ real address.
 
 ---
 
-## 5. Overview — the three cards
+## 5. Overview — the two cards
 
-Three `.card`s in `.cards`. Each owns its own `data-state`, so one failing
-endpoint degrades one card. Each has a loading skeleton, a ready pane, an
-honest empty pane and an error pane with a retry button.
+Two `.card`s in `.cards`, equal halves at every breakpoint from 768px up. Each
+owns its own `data-state`, so one failing endpoint degrades one card. Each has a
+loading skeleton, a ready pane, an honest empty pane and an error pane with a
+retry button.
 
-### 5a. `#card-vault` — retry `#btn-vault-retry`, message `#vault-error-text`
+**There is no vault card, and no vault figure anywhere on the site.** No
+balance, no USD approximation, no fee reserve, no pool, no minimum-to-run, no
+fill bar, no carry-over holdings — and, as before, no address, no Solscan link
+and no "send SOL here" callout. `/api/vault` is not requested by the browser at
+all and `/api/config.vault.address` is read past and never printed.
 
-**The vault address is not rendered anywhere on this site.** There is no
-address element, no copy button for it, no Solscan link and no "send SOL here"
-callout. `/api/config.vault.address` and `/api/vault.address` are both read past
-and never printed.
+The vault as a *mechanism* is still explained, and must stay explained: the
+Overview eyebrow says `Vault fills from trading fees`, How-it-works step 1 is
+about the jar filling, and the demand flow says `Vault buys once`. That copy is
+true and is the point of the product. Only the live numbers went.
 
-| id | content | note |
-|---|---|---|
-| `#vault-balance-sol` | `4.2610` | **the number only.** The unit `SOL` is a separate `.numeral__unit` span already in the markup — do not append it |
-| `#vault-balance-usd` | `≈ $612` | |
-| `#vault-reserve` | `0.05 SOL` | |
-| `#vault-progress` | set its `aria-label` in sync, e.g. `Pool 4.21 of the 0.50 SOL minimum` | |
-| `#vault-progress-fill` | `style.width = pct + '%'` where pct = `min(100, pool / minPool * 100)` | the one place `style.width` is allowed, along with the other bars |
-| `#vault-pool` | `4.2110 SOL` | |
-| `#vault-min-pool` | from `/api/config` | |
-| `#vault-holdings-table` | state owner; body `#vault-holdings-body`, rows from `#tpl-holding-row` | |
-| `#vault-holdings-count` | `3 tokens` / `none` | |
-| `#vault-updated` | `updated 12:04 UTC` | |
-
-### 5b. `#card-round` — retry `#btn-round-retry`, message `#round-error-text`
+### 5a. `#card-round` — retry `#btn-round-retry`, message `#round-error-text`
 
 | id | content |
 |---|---|
@@ -294,7 +285,7 @@ and never printed.
 | `#round-progress-pct` | `69%`, or `—` |
 | `#round-progress-label` | one word: `Filling` / `Snapshot` / `Buying` / `Sending` / `Settled`. `—` when unknown |
 
-### 5c. Snapshot state — `#round-snapshot`, inside the round card
+### 5b. Snapshot state — `#round-snapshot`, inside the round card
 
 A snapshot is a moment inside a round, not a place, so it is a state of this
 card rather than a sixth tab.
@@ -310,7 +301,7 @@ card rather than a sixth tab.
 - `#snapshot-balance` — `42,850,000 STOX`, or leave the block hidden. Never
   invent a balance, and never show one before the token exists.
 
-### 5d. `#card-holders` — retry `#btn-holders-retry`, message `#holders-error-text`
+### 5c. `#card-holders` — retry `#btn-holders-retry`, message `#holders-error-text`
 
 | id | content |
 |---|---|
@@ -526,8 +517,7 @@ Starts at `data-state="empty"` (the not-connected block, whose
 | `#proj-eligibility` | `Yes` / `No — need 1,000,000` / `Unknown until launch` |
 | `#proj-cycle-row` | the whole `.kv__row`; `hidden = true` unless `/api/me.cycle` carries a boolean |
 | `#proj-cycle` | did this wallet hold across the whole cycle: `Yes — counted at the smaller of the two snapshots` / `No — not for the cycle running now` |
-| `#proj-share` | `0.42% of the pool` or `—` (also mirror the bare percentage into `#stat-your-share`) |
-| `#proj-pool` | `4.21 SOL` |
+| `#proj-share` | `0.42% of the pool` or `—` (also mirror the bare percentage into `#stat-your-share`). **The share is the last thing here that touches the pool, and it stays because a percentage does not reveal a balance.** The `Pool now` row that used to sit under it is gone with the vault card; do not put a SOL figure back |
 | `#proj-cycle-note` | `.callout--info`, `hidden` unless the server sent a note or the wallet did not hold the full cycle. `#proj-cycle-note-title` / `#proj-cycle-note-text`. The server's `cycle.note` is rendered verbatim when it sends one — this is the "you bought this cycle, your first drop is the round after" case, and it stays calm, not alarming |
 | `#proj-note` | why the number is an estimate; say `simulated` when `mode !== 'LIVE'` |
 | `#projection-sim` | badge, `hidden = false` in DRY_RUN |
@@ -848,8 +838,8 @@ Attributes JS may set: `data-state`, `data-mode`, `data-dir`, `data-status`,
 `value`, `href`, `src`, `alt`, `textContent`, `title`.
 
 Two style writes only, both declarative:
-- `style.width = pct + '%'` on `#vault-progress-fill`, `#basket-meter-fill`,
-  `[data-field="bar"]` in demand rows;
+- `style.width = pct + '%'` on `#basket-meter-fill` and `[data-field="bar"]` in
+  demand rows;
 - `element.style.setProperty('--pct', String(pct))` on a `.pick` row.
 
 Everything else — colours, spacing, borders, fonts, layout — belongs to the CSS.
@@ -865,7 +855,7 @@ If you find yourself writing `style.color` or `style.background`, stop and use a
   need them; keep them when you write text.
 - Money: `$1,234.56` under 10k, `$12.3K`, `$4.56M`, `$1.23B`, `$5.56T`.
 - SOL: 4 dp for balances, 3 dp for pools. **Never append the unit to a value
-  whose markup already has a `.numeral__unit` sibling** (`#vault-balance-sol`).
+  whose markup already has a `.numeral__unit` sibling.**
 - Percent change: always signed, 2 dp, plus `data-dir`.
 - Addresses: `first4…last4` (`769f…f9up`) via one shared `truncAddr()`; the full
   value goes in the `title` attribute and in the clipboard.
@@ -875,7 +865,7 @@ If you find yourself writing `style.color` or `style.background`, stop and use a
 - Times: UTC everywhere, `HH:mm` or `YYYY-MM-DD HH:mm`, with the literal `UTC`
   next to the first one on screen. Do not silently localise.
 - `null` / unknown renders as `—` (em dash), never `0`, `N/A` or `undefined`.
-- **A display numeral takes a value, not a sentence.** `#vault-balance-sol`,
+- **A display numeral takes a value, not a sentence.**
   `#countdown-value` and `#stat-eligible-wallets` are set at 40–54px; a sentence
   in one of them wraps to four lines. The explanation goes in the `.card__sub`
   or the note slot beside it.
@@ -910,8 +900,10 @@ and never put the value in the URL.
    **The frames contain mock figures — 214 eligible wallets, 12.34 SOL, a 69%
    ring. None of them may ship.** Every one of those slots starts as `—` in the
    markup and stays that way until the API answers.
-6. The vault address is never rendered, and the page never tells anyone to send
-   SOL anywhere. The balance is shown; the address is not (§5a).
+6. No vault figure is rendered — not the balance, not the pool, not the reserve
+   — and neither is the address. The page never tells anyone to send SOL
+   anywhere, and the browser does not even ask for `/api/vault` (§5). The vault
+   as a mechanism stays in the explanatory copy, because that part is true.
 7. The contract-address button copies `config.token.mint` or nothing at all. No
    placeholder that reads like an address, ever.
 8. `#round-snapshot` and `#arrivals` are hidden unless the API reported the
@@ -922,25 +914,47 @@ and never put the value in the URL.
 ## 18. Boot order that matches the shell
 
 1. Apply the stored theme (dark is the default when nothing is stored).
-2. Wire the tab bar (§2) and read the URL hash.
+2. Wire the tab bar (§2), read the URL hash, and tell every module whether its
+   panel is on screen — **before** the first request, so a deep link like
+   `#basket` opens on the right panel instead of flipping to it later.
 3. `GET /api/config` → rules text, token identity, mode pill, footer, countdown
-   target, `#rounds-empty-time`, `#vault-min-pool`, `#holders-threshold`,
-   `#rule-*`.
+   target, `#rounds-empty-time`, `#holders-threshold`, `#rule-*`.
 4. `GET /api/universe` → tape, `#stocks-body`, `#basket-add-list`, and the
-   default basket (top 5 × 20%) if the user has no saved prefs.
-5. `GET /api/stats` → `#card-round`, `#card-holders`, `#demand-bars`,
-   `#demand-basis`, `#stat-distributed`, `#stat-rounds-count`.
-6. `GET /api/vault` → `#card-vault` and holdings.
-7. `GET /api/rounds?limit=25` → ledger.
-8. Restore a stored session token → `GET /api/me` → basket, projection,
-   `#stat-your-share`, `#snapshot-check`, `#arrivals`.
+   default basket (top 5 × 20%) if the user has no saved prefs. The table paints
+   before the basket resolves its default, so re-tick the rows once afterwards
+   or the suggested basket shows ticked on one side of the panel and unticked on
+   the other.
+5. `GET /api/stats` → `#card-holders`, `#demand-bars`, `#demand-basis`,
+   `#stat-distributed`, `#stat-rounds-count`.
+6. `GET /api/rounds?limit=25` → ledger.
+7. Restore a stored session token → `GET /api/me` → basket, projection,
+   `#stat-your-share`, `#round-snapshot` / `#snapshot-check`, `#arrivals`.
+
+Four requests on boot, and no more: config, universe, stats, rounds. There is no
+`/api/vault` call, and no per-row history call — the sparkline column that used
+to make twenty of them is gone with the old table.
 
 Each of these owns its own `[data-state]` container, so a slow or failing
 endpoint degrades only its own card. Never leave a container on `loading`
 after a rejection — flip it to `error` and offer the retry button that is
 already in the markup.
 
-Polling: prices/tape and stats every 60s, vault every 60s, rounds every
-5 min, countdown every 1s. Pause polling when `document.hidden`. Panels that are
-`hidden` still get their data — switching tab must never show a spinner for
-something that was already fetched.
+Polling: prices/tape every 30s, stats every 60s, rounds every 5 min, countdown
+every 1s. Pause polling when `document.hidden`. Panels that are `hidden` still
+get their data — **switching tab must never fetch anything and must never show a
+spinner for something that was already fetched.**
+
+### What a hidden panel stops doing
+
+Data keeps flowing; *work* stops. A CSS marquee, an SVG ring and a set of bars
+all cost frames behind a `hidden` panel, so each module takes a `setVisible`
+and paints only when someone can see it:
+
+| module | while hidden | on the way back |
+|---|---|---|
+| `ui/tape.js` | `#tape.dataset.paused = "true"`, kept apart from the user's own pause so returning does not un-press their button | the marquee resumes |
+| `ui/round.js` | the digits, the ring and the schedule line are not written. The countdown itself keeps ticking, because `document.title` is driven from it | one repaint, only if a tick arrived while away |
+| `ui/demand.js` | the bars are not built | rebuilt only if the data changed |
+| `ui/stocks.js` | the drawer is closed on the way out, which destroys the candle chart | reopened by the user, never automatically |
+
+`document.hidden` counts as hidden too: a background tab animates nothing.

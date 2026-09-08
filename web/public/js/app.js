@@ -486,6 +486,12 @@ async function loadUniverse({ toastOnError = false } = {}) {
     tape.render(universe);
     stocks.render(universe);
     basket.renderUniverse(universe);
+    // The table paints before the basket knows what the default picks are, so
+    // the ticks are settled here, once, after both have the same universe.
+    // Without this the suggested basket is checked in the allocation panel and
+    // unchecked in the table beside it.
+    stocks.refreshTicks();
+    demand.setMine(basket.mints());
     if (state.stats) demand.render(state.stats, state.stockIndex);
     markFetched();
     return universe;

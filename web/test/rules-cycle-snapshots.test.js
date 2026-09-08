@@ -36,7 +36,12 @@ test('anti-cheat copy states two snapshots and the smaller balance', () => {
   assert.ok(copy, 'the server named the rule, so the page states it');
   assert.equal(copy.hours, '6');
   assert.match(copy.title, /two snapshots/i);
-  assert.match(copy.after, /an hour before the mark/);
+  // "in the first hour OF THE CYCLE", not "an hour before the mark". On a
+  // six-hour cycle those are five hours apart, and the wrong one describes a
+  // rule that lets someone buy four hours in and still collect — which is the
+  // exact behaviour the full-cycle rule exists to stop.
+  assert.match(copy.after, /in the first hour of the cycle/);
+  assert.doesNotMatch(copy.after, /before the mark[^.]*One snapshot/);
   assert.match(copy.after, /smaller of the two balances/);
   assert.match(copy.after, /first drop is the round after/);
   assert.match(copy.after, /±10 minutes/);
@@ -67,7 +72,7 @@ test('the opening window is worded from the number the server sent', () => {
   assert.equal(windowPhrase(0), null);
 
   const copy = snapshotRuleCopy({ ...CONFIG, rules: { ...CONFIG.rules, openSnapshotWindowMin: 90 } });
-  assert.match(copy.after, /90 minutes before the mark/);
+  assert.match(copy.after, /in the first 90 minutes of the cycle/);
 });
 
 test('an anti-cheat round with no window still says a window exists', () => {
@@ -77,7 +82,7 @@ test('an anti-cheat round with no window still says a window exists', () => {
 });
 
 test('the ledger footnote follows the same flags', () => {
-  assert.match(ledgerFootNote(CONFIG), /two snapshots — one 60 minutes before the mark/);
+  assert.match(ledgerFootNote(CONFIG), /two snapshots — one in the first 60 minutes of its cycle/);
   assert.match(ledgerFootNote(CONFIG), /smaller of the two balances/);
   assert.match(
     ledgerFootNote({ rules: { jitterMin: 10 } }),

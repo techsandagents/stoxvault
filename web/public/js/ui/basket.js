@@ -889,7 +889,9 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
         const el = document.getElementById(id);
         if (el && text) el.textContent = text;
       };
-      set('rule-picks-range', `${rules.minPicks} and ${rules.maxPicks}`);
+      // The shell reads "Pick <span>2–5</span> stocks", so this is a range, not
+      // the "between X and Y" clause the old prose wrapped it in.
+      set('rule-picks-range', `${rules.minPicks}–${rules.maxPicks}`);
       set('rule-pct-range', `${rules.minPct}–${rules.maxPct}%`);
       set('rule-universe-size', String(rules.universeSize));
       // Number.isFinite does not coerce, so null (unknown) and undefined (never
