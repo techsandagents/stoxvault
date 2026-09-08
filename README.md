@@ -3,10 +3,10 @@
 $STOXVAULT — a Solana memecoin whose creator fees buy **real tokenised stocks** and send them straight to
 holders' wallets — weighted by the stocks each holder picked.
 
-Every 6 hours:
+Every hour (configurable via `ROUND_INTERVAL_HOURS`):
 
 1. The **vault** wallet's SOL balance becomes the round's pool.
-2. Holders are snapshotted **twice**: once in the first hour of the cycle and once at the drop.
+2. Holders are snapshotted **twice**: once early in the cycle and once at the drop.
    A wallet is weighted by the **smaller** of the two balances, so it must hold across the whole
    cycle to be paid for it. Buy mid-cycle and your first drop is the next round. Sell before the
    drop and you get nothing. Anyone holding at least **0.1% of supply** across the cycle is eligible.
@@ -45,12 +45,14 @@ checkable by a stranger, so revisit this if trust ever becomes the constraint.
 
 | | |
 |---|---|
-| Coin | **not launched** — name, ticker and mint are intentionally blank |
-| Mode | `LIVE=0` → DRY_RUN. Rounds are computed and quoted for real, but nothing is sent on chain. |
+| Coin | **launched** — StoxVault / $STOXVAULT, mint `7NACVp3qt8xLQcWtQYZnqsk6k8kn334s2TopimmRpump` (pump.fun, Token-2022, 1B supply, mint and freeze authority revoked) |
+| Mode | `LIVE=1`. Rounds execute real Jupiter swaps and real Token-2022 transfers. |
+| Schedule | Every hour. A round with less than `MIN_ROUND_POOL_SOL` in the vault is SKIPPED and the SOL carries over. |
+| First airdrop | 2026-09-08, round `r_2026-09-08T07`: 1.3349 SOL bought 0.9208 SPCXx and it was transferred to **60 holders**, zero failures. |
 | Stocks | xStocks by Backed, traded through Jupiter. Top 20 by underlying company market cap, filtered to real on-chain liquidity. |
 
-Flip `LIVE=1` only after the coin exists, `TOKEN_MINT` is set, `EXCLUDED_WALLETS` lists the LP
-and bonding-curve accounts, and the vault holds enough SOL to cover the pool plus rent.
+The pump.fun bonding curve is in `EXCLUDED_WALLETS`: it holds roughly a third of the supply, and
+leaving it in would hand a third of every drop to the curve instead of to holders.
 
 ---
 
