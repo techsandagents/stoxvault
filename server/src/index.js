@@ -21,15 +21,49 @@ const logger = log.child('server');
 
 /* -------------------------------------------------------------------- app -- */
 
-function corsOptions(cfg) {
+/**
+ * Turn one CORS_ORIGIN entry into a matcher.
+ *
+ * A `*` in the entry matches any run of characters that is not a dot or a slash,
+ * so `https://stoxvault-*.vercel.app` covers every preview deployment of that
+ * one project without opening the door to `https://evil.vercel.app`. Everything
+ * else in the entry is matched literally.
+ *
+ * This exists because a hosting platform gives every deployment its own URL. An
+ * exact-match list silently blocks each of those, and the site then reports the
+ * API as unreachable even though it is perfectly healthy.
+ */
+export function originMatcher(entry) {
+  if (!entry.includes('*')) return (origin) => origin === entry;
+  const pattern = new RegExp(
+    `^${entry.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^./]*')}$`,
+  );
+  return (origin) => pattern.test(origin);
+}
+
+export function corsOptions(cfg) {
   const raw = String(cfg.corsOrigin || '*').trim();
-  // '*' emits the header for every request, even ones without an Origin.
-  // A configured list is passed as an array so the package matches the request
-  // origin against it and grants nothing to anyone else (a bare string would be
-  // echoed back to every caller).
-  const origin = raw === '*' ? '*' : raw.split(',').map((s) => s.trim()).filter(Boolean);
+  // '*' alone emits the header for every request, even ones without an Origin.
+  if (raw === '*') {
+    return {
+      origin: '*',
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-Key'],
+      exposedHeaders: ['X-Round-Id'],
+      maxAge: 86400,
+    };
+  }
+
+  const matchers = raw.split(',').map((s) => s.trim()).filter(Boolean).map(originMatcher);
   return {
-    origin,
+    // A function, not an array: the cors package only does exact matching on an
+    // array, and the entries may carry a wildcard. A request with no Origin at
+    // all (curl, a server-to-server call, a health check) is allowed through —
+    // CORS only ever governs browsers.
+    origin(origin, cb) {
+      if (!origin) return cb(null, true);
+      cb(null, matchers.some((match) => match(origin)));
+    },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-Key'],
     exposedHeaders: ['X-Round-Id'],
