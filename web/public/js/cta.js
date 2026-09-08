@@ -135,7 +135,9 @@ export function thresholdText(config, me) {
   const amount = ui === null ? null : `${fmtInt(ui)}${symbol ? ` ${symbol}` : ''}`;
   const share = bps === null ? null : `${bps / 100}% of supply`;
 
-  if (amount && share) return `${amount} — ${share}`;
+  // Parenthesised, not dashed: the phrase is dropped mid-sentence, and an
+  // em-dash aside with no closing dash reads as though the sentence ended.
+  if (amount && share) return `${amount} (${share})`;
   return amount || share || null;
 }
 
@@ -239,7 +241,7 @@ export function ctaCopy(view, { countdown = null } = {}) {
         title: 'The stocks you receive are yours to choose',
         text:
           `Fees from the coin buy real tokenised stocks every few hours and send them straight to holders' ` +
-          `wallets — nothing to claim. Save no picks and ${standard} is used. Choosing changes which stocks ` +
+          `wallets — nothing to claim. Save no picks and you get ${standard}. Choosing changes which stocks ` +
           `arrive, not how much is spent.`,
         meta: null,
         primary: { label: 'Connect wallet', action: 'connect' },

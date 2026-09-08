@@ -79,7 +79,11 @@ export function createCta({ onConnect, onBasket, symbolOf } = {}) {
 
   function paintAction(button, spec) {
     if (!spec) {
+      // Cleared as well as hidden: a `hidden` button is out of the
+      // accessibility tree, but leaving last state's label on it would put the
+      // wrong words back on screen for a frame the next time it is shown.
       button.hidden = true;
+      button.textContent = '';
       button.removeAttribute('data-cta-action');
       return;
     }

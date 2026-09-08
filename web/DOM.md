@@ -9,7 +9,7 @@ If something is genuinely missing, add it to this file first.
 Files: `public/index.html`, `public/css/{tokens,base,layout,components}.css`,
 `public/assets/*`. You own everything under `public/js/`: `config.js` (a classic
 script, runs first), `app.js` (`type="module"`), and the modules it imports —
-`api.js`, `wallet.js`, `format.js`, `charts.js`, `rules.js` and `ui/*`.
+`api.js`, `wallet.js`, `format.js`, `charts.js`, `rules.js`, `cta.js` and `ui/*`.
 
 Pure decision functions live outside the DOM code and are covered by
 `web/test/*.test.js` (`node --test web/test/` from the repo root).
@@ -94,7 +94,8 @@ a header with a tab bar and five `role="tabpanel"` sections.
 parts · `#stat-your-share` · `#holders-threshold` / `#holders-note` ·
 `#overview-eyebrow` · `#arrivals` and `#tpl-arrival-row` · `#rules-list` and
 `#rule-*` · `#btn-round-retry` / `#btn-holders-retry` ·
-`#basket-total-row` · `.tick` inside `#tpl-stock-row`.
+`#basket-total-row` · `.tick` inside `#tpl-stock-row` ·
+`#cta` and its parts (§3.5), the call-to-action banner under the header.
 
 ---
 
@@ -232,6 +233,98 @@ Tab title: update `document.title` when the countdown is known, e.g.
 There is no status pill, no refresh button and no theme toggle in the header
 any more. The pill is in the Overview identity strip (§4); refresh and theme
 are in the footer (§13).
+
+---
+
+## 3.5 The call-to-action banner — `#cta`
+
+The first child of `<main>`, so it sits under the header and above every tab
+panel and is on screen whichever tab is open. It ships `hidden` and stays hidden
+until the API says enough for one of five honest states.
+
+```html
+<section class="cta" id="cta" data-state="none" aria-labelledby="cta-title" hidden>
+  <span class="cta__mark" aria-hidden="true">…</span>
+  <div class="cta__body">
+    <h2 class="cta__title" id="cta-title">…</h2>
+    <p class="cta__text"  id="cta-text"></p>
+    <p class="cta__meta mono" id="cta-meta" hidden></p>
+  </div>
+  <div class="cta__actions">
+    <button class="btn btn--primary btn--sm" id="btn-cta-primary"   hidden></button>
+    <button class="btn btn--sm"             id="btn-cta-secondary" hidden></button>
+  </div>
+  <button class="btn btn--icon btn--sm cta__close" id="btn-cta-dismiss" aria-label="Dismiss this message">…</button>
+</section>
+```
+
+| id | JS writes |
+|---|---|
+| `#cta` | `hidden`, and `dataset.state` = `none` \| `connect` \| `choose` \| `saved` \| `below` — the CSS reads it for the calm variants |
+| `#cta-title` | the `<h2>`. It is the region's accessible name, so it is never blank while the banner is shown |
+| `#cta-text` | one short paragraph. Plain text, no markup |
+| `#cta-meta` | the countdown line, `hidden` unless the state prints one |
+| `#btn-cta-primary` | the gold action. `hidden` in the calm states — a receipt has no gold bar |
+| `#btn-cta-secondary` | the plain action |
+| `#btn-cta-dismiss` | closes it and remembers the state key |
+
+Both action buttons carry `data-cta-action="connect" \| "basket"`, delegated on
+`#cta`. `basket` selects the Basket tab **through the tab controller** (§2), so
+the hash updates, and then focuses `#panel-basket` so a keyboard user lands
+inside the panel rather than on a button that just vanished.
+
+### The state comes from the API, never from an assumption
+
+`js/cta.js` is pure — no DOM, no fetch — and is covered by
+`web/test/cta.test.js`. It reads exactly:
+
+| source | fields |
+|---|---|
+| `/api/config` | `token.launched`, `token.symbol`, `defaultBasket.picks`, `rules.eligibleBps`, `rules.eligibleThresholdUi` |
+| `/api/me` | `balance.eligible`, `balance.thresholdUi`, `prefs.picks`, `picksSource` |
+| the countdown | the same `onTick` seconds `app.js` already drives §5a with |
+
+| state | when | what it says |
+|---|---|---|
+| `connect` | launched, no wallet | what the product does, and that the default is used if you save nothing. Primary opens the wallet modal, secondary jumps to Basket |
+| `choose` | connected, `balance.eligible === true`, nothing saved | you qualify, you have not chosen, your next drop uses the named default, and the countdown. Primary goes to Basket |
+| `saved` | connected, eligible, a basket saved | a one-line receipt naming the picks. No primary button, no urgency |
+| `below` | connected, `balance.eligible === false` | the threshold as a fact. It never tells anyone to buy more |
+| `none` | not launched, or any field it would have to claim is missing | renders nothing at all |
+
+Degradations, all tested, all deliberate:
+
+- `token.launched !== true` → `none`. So does an unreadable config.
+- Connected with no `me` document yet, or `balance.eligible` not a boolean →
+  `none`. Eligibility is **never** claimed or denied without the API saying so.
+- **`effectivePicks` is not evidence of a choice.** It is what a round would buy
+  for you, which is the default when you have saved nothing. Only `prefs.picks`,
+  or a `picksSource` of `prefs` / `prefs-adjusted`, mean the holder chose.
+- A default basket the server did not resolve → the sentence stays generic
+  ("the standard basket") rather than naming one.
+- A saved pick whose symbol cannot be resolved from the universe → the receipt
+  drops to the generic wording rather than printing a mint.
+- `below` with no threshold in either document → `none`, because that state
+  exists to state the threshold.
+
+### Honesty rules specific to this element
+
+It is the one element that actively asks someone to act, so:
+
+1. No return, yield, price or claim that anyone will make money.
+2. Picking changes **which** stocks arrive, never **how much** is spent. Any
+   sentence that could read as "pick and get more" is wrong and is asserted
+   against in the tests.
+3. A basket saved now applies from the **next** round, never one already under
+   way. The two states that mention saving say so.
+4. No holder count, no amount, no number that did not come from the API.
+
+### Dismissal
+
+`localStorage['stockdrop:cta-dismissed']` holds a comma-separated list of
+dismissed **state keys**, every access wrapped in try/catch. Dismissal is per
+state: closing the `connect` prompt does not hide `choose`, because that is new
+information. Saving or clearing a basket clears every dismissal.
 
 ---
 
