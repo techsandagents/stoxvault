@@ -67,7 +67,7 @@ CONTRACT.md   binding interface: env, data model, store, HTTP API, engine, keepe
 
 ```bash
 cd server
-cp ../.env.example .env    # then set what you need; VAULT_SECRET_KEY is already generated
+cp ../.env.example .env    # then fill it in; see below
 npm install
 npm test
 npm start                  # http://localhost:4700
@@ -92,6 +92,20 @@ Run one round by hand:
 ```bash
 cd server && npm run round -- --dry
 ```
+
+## Secrets
+
+Nothing secret is in this repository, and nothing secret should ever be committed to it.
+`server/.env` is gitignored and is the only place a key lives locally; in production they are
+Railway environment variables.
+
+- `VAULT_SECRET_KEY` controls the vault and therefore every round. Generate your own with
+  `npm run gen-vault`, which writes it to `server/.env` and prints only the public address.
+  Anyone holding this key can drain the vault.
+- `HELIUS_API_KEY`, `ADMIN_KEY` and `SESSION_SECRET` are per-deployment. Generate the last two
+  with something like `openssl rand -hex 32`.
+- The vault ADDRESS, the token mint and every round in the ledger are public by design. That is
+  the point: anyone can recompute a round from the published document.
 
 ## Deploy
 
