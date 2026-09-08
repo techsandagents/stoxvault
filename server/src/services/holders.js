@@ -221,12 +221,17 @@ export function createHoldersService(args = {}) {
     const rows = [];
     let page = 1;
     for (; page <= MAX_PAGES; page++) {
+      // `options` ONLY. Helius deserializes `displayOptions` into the same
+      // `options` field, so sending both is rejected outright with
+      // "duplicate field `options`" and the whole snapshot fails — which means
+      // no holder list, which means no round can pay anybody. Verified against
+      // the live endpoint on 2026-09-08: options alone works, displayOptions
+      // alone works, both together error.
       const result = await rpc.call('getTokenAccounts', {
         mint,
         page,
         limit: HELIUS_PAGE_SIZE,
         options: { showZeroBalance: false },
-        displayOptions: { showZeroBalance: false },
       });
       const accounts = result?.token_accounts || result?.tokenAccounts || [];
       if (!Array.isArray(accounts)) throw new Error('unexpected getTokenAccounts payload');
