@@ -13,7 +13,8 @@
     "test": "node --test test/",
     "round": "node scripts/run-round.mjs",
     "gen-vault": "node scripts/gen-vault.mjs",
-    "rehearse": "node scripts/rehearse.mjs"
+    "rehearse": "node scripts/rehearse.mjs",
+    "preflight": "node scripts/preflight.mjs"
   },
   "dependencies": {
     "@solana/spl-token": "0.4.13",

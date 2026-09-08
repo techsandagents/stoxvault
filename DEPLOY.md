@@ -65,8 +65,27 @@ The two records to add at GoDaddy are in [DNS.md](DNS.md).
       per holder on the first round: 1,000 holders × 5 stocks ≈ 10 SOL once, then near zero.
 - [ ] Run `npm run rehearse -- 25` and confirm both checks PASS. It runs a whole round against real
       Jupiter quotes with a synthetic holder set, and fails loudly if anything tries to send.
+- [ ] Run `npm run preflight` against production configuration and read every line. **This is the
+      only check that touches mainnet.** It builds the real Jupiter swap and the real
+      `createAssociatedTokenAccountIdempotent` + `transferChecked` batch, signs them with the vault
+      key, and asks mainnet to *simulate* them. It sends nothing and cannot: the RPC client it hands
+      to every module throws on any send, and the transport under it refuses a `sendTransaction`
+      body before the socket is written. Seven named checks: vault identity, vault funding, all 20
+      mints still Token-2022 / unhooked / unpaused, a real swap transaction, a real distribution
+      transaction (with the recipient ATA re-derived independently), rent reserved vs rent charged,
+      and the two mode interlocks. Exit code is non-zero only on a genuine FAIL.
+      - `NOT FUNDED` and `PASS WITH NOTE` on checks 4 and 5 are expected while the vault is empty —
+        they mean the transaction is well formed and the only missing thing is money.
+      - Anything else on 4 or 5 is a **FAIL** and must block go-live: it means mainnet rejected an
+        instruction we built.
+      - Re-run it **after funding the vault** and confirm checks 4 and 5 go to a plain `PASS`. That
+        is the only moment the live path is proven end to end.
+      - `npm run preflight -- --json` for CI. `npm run preflight -- --prove-guard` deliberately
+        trips the send guard and shows all four refusal points firing.
 - [ ] Run `npm run round -- --dry` against production config and read the whole plan.
 - [ ] Only then set `LIVE=1`.
+- [ ] After the first live round, run `npm run preflight` once more: it re-reads the mints, so an
+      issuer that later sets a transfer hook or pauses a stock is caught before the next round.
 
 ## 4. Operating
 
