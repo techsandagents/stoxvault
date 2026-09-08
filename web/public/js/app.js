@@ -18,6 +18,7 @@ import { createRound } from './ui/round.js';
 import { createHolders } from './ui/holders.js';
 import { createRounds } from './ui/rounds.js';
 import { createDemand } from './ui/demand.js';
+import { createCta } from './ui/cta.js';
 import { toast, copyToClipboard } from './ui/toast.js';
 import { coinButtonState, snapshotRuleCopy } from './rules.js';
 import {
@@ -165,13 +166,35 @@ const stocks = createStocks({
   onRetry: () => loadUniverse({ toastOnError: true }),
 });
 
+/**
+ * The call-to-action banner under the header.
+ *
+ * It is created before `tabs` and reads it lazily inside the handler, which is
+ * safe because nothing can click a banner that is still `hidden` at this point.
+ * Its state comes only from `/api/config` and `/api/me` — see `js/cta.js`.
+ */
+const cta = createCta({
+  onConnect: () => openWalletModal(),
+  onBasket: () => {
+    tabs.select('basket');
+    // Switching panel is not enough for somebody on a keyboard: the focus ring
+    // would still be on a banner button that just disappeared behind them.
+    const panel = document.getElementById('panel-basket');
+    if (panel && typeof panel.focus === 'function') panel.focus();
+  },
+  symbolOf: (mint) => state.stockIndex.get(mint)?.symbol || null,
+});
+
 const basket = createBasket({
   onChange: () => {
     stocks.refreshTicks();
     demand.setMine(basket.mints());
   },
   onConnect: () => openWalletModal(),
-  onSaved: () => {
+  onSaved: (picks) => {
+    // What the server confirmed it stored — or null, when the saved basket was
+    // deleted and the wallet is back on the default.
+    cta.notifySaved(picks);
     loadStats().catch(() => {});
   },
   onRetry: () => loadMe({ toastOnError: true }),
@@ -205,6 +228,8 @@ let lastSrMinute = null;
 const countdown = createCountdown({
   onTick: ({ seconds, text, target }) => {
     round.tick({ seconds, text, target });
+    // The banner prints a coarse `4h 36m`, so it repaints at most once a minute.
+    cta.tick(seconds !== null && target ? seconds : null);
 
     if (seconds !== null && target) {
       document.title = `${BRAND} — next round in ${fmtCountdown(seconds)}`;
@@ -456,6 +481,7 @@ async function loadConfig({ toastOnError = false } = {}) {
     round.renderConfig(config);
     holders.renderConfig(config);
     rounds.renderConfig(config);
+    cta.renderConfig(config);
     countdown.setTarget(config.nextRoundAt);
     countdown.start();
     markFetched();
@@ -493,6 +519,9 @@ async function loadUniverse({ toastOnError = false } = {}) {
     stocks.refreshTicks();
     demand.setMine(basket.mints());
     if (state.stats) demand.render(state.stats, state.stockIndex);
+    // The banner names a saved basket by ticker, and tickers live in the
+    // universe — so it repaints once the universe it needs has landed.
+    cta.render();
     markFetched();
     return universe;
   } catch (err) {
@@ -599,6 +628,7 @@ function applyConnected(me) {
   basket.renderMe(me, token);
   holders.renderMe(me);
   round.renderMe(me, token);
+  cta.renderMe(me);
   demand.setMine(basket.mints());
   stocks.refreshTicks();
 }
@@ -618,6 +648,7 @@ function applyDisconnected() {
   basket.setDisconnected();
   holders.setDisconnected();
   round.setDisconnected();
+  cta.setDisconnected();
   demand.setMine([]);
   stocks.refreshTicks();
 }
@@ -961,6 +992,6 @@ window.STOCKDROP = Object.assign(window.STOCKDROP || {}, {
     reload: refreshAll,
     api,
     tabs,
-    panels: { tape, stocks, basket, round, holders, rounds, demand },
+    panels: { tape, stocks, basket, round, holders, rounds, demand, cta },
   },
 });

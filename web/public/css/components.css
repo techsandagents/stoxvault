@@ -1476,3 +1476,134 @@ dialog::backdrop { background: var(--overlay); }
 /* The X link in the footer's bottom row. */
 .foot__x { display: inline-flex; align-items: center; gap: 6px; }
 .foot__x-icon { width: 11px; height: 11px; flex: 0 0 auto; }
+
+/* ==========================================================================
+   21. Call-to-action banner (#cta)
+
+   One strip under the header, above every panel. It is deliberately built
+   from the same parts as a .callout — surface-2 ground, hairline border, a
+   3px gold edge — so it reads as part of the page rather than an ad dropped
+   on top of it. The only accent is the gold already in tokens.css.
+
+   Four painted states, set by JS on [data-state]:
+     connect | choose   the two that ask for something — gold edge, gold mark
+     saved              a receipt: neutral edge, muted mark, no gold bar
+     below              a fact: neutral edge, muted mark
+   ========================================================================== */
+.cta {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "mark body"
+    ".    actions";
+  align-items: start;
+  gap: var(--s-1) var(--s-15);
+  position: relative;
+  margin-bottom: var(--s-3);
+  padding: var(--s-2);
+  padding-right: 44px;            /* room for the close button */
+  border: var(--hairline) solid var(--rule);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.cta__mark {
+  grid-area: mark;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-sm);
+  background: var(--gold-wash);
+  color: var(--gold-bright);
+}
+.cta__mark svg { width: 15px; height: 15px; }
+
+.cta__body { grid-area: body; display: grid; gap: 5px; min-width: 0; }
+.cta__title {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semi);
+  line-height: var(--lh-snug);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.cta__text {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-body);
+  color: var(--ink-2);
+  max-width: 78ch;
+  overflow-wrap: anywhere;
+}
+.cta__meta {
+  font-size: var(--fs-xs);
+  color: var(--gold-bright);
+  letter-spacing: 0.01em;
+}
+
+.cta__actions {
+  grid-area: actions;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+  align-items: center;
+}
+
+.cta__close {
+  position: absolute;
+  top: var(--s-15);
+  right: var(--s-15);
+  color: var(--ink-3);
+}
+.cta__close:hover:not(:disabled) { color: var(--ink); }
+
+/* ---- the calm states ---------------------------------------------------- */
+/* A receipt and a statement of fact must not shout. They keep the layout and
+   lose the gold: neutral edge, muted mark, and (in JS) no primary button. */
+.cta[data-state="saved"],
+.cta[data-state="below"] {
+  border-left-color: var(--rule-strong);
+}
+.cta[data-state="saved"] .cta__mark,
+.cta[data-state="below"] .cta__mark {
+  background: var(--surface-3);
+  color: var(--ink-3);
+}
+.cta[data-state="saved"] .cta__title {
+  font-size: var(--fs-body);
+  font-weight: var(--fw-medium);
+  color: var(--ink-2);
+}
+.cta[data-state="saved"] .cta__text { color: var(--ink); }
+
+/* ---- entrance ----------------------------------------------------------- */
+/* Only under no-preference. base.css also neutralises animations under
+   `reduce`, but declaring it here means the rule is never even applied. */
+@media (prefers-reduced-motion: no-preference) {
+  .cta { animation: cta-in var(--dur-slow) var(--ease) both; }
+  @keyframes cta-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: none; }
+  }
+}
+
+/* ---- >= 768px: the actions move up beside the copy ---------------------- */
+@media (min-width: 768px) {
+  .cta {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "mark body actions";
+    align-items: center;
+    gap: var(--s-2);
+    padding-right: 52px;
+  }
+  .cta__actions { justify-content: flex-end; }
+}
+
+/* ---- <= 374px: the close button stops squeezing the copy ---------------- */
+@media (max-width: 400px) {
+  .cta { padding: var(--s-15); padding-right: 40px; }
+  .cta__close { top: var(--s-1); right: var(--s-1); }
+  .cta__actions .btn { flex: 1 1 auto; justify-content: center; }
+}
