@@ -1,17 +1,19 @@
 /**
  * STOXVAULT — the Top 20 table and the stock drawer.
  *
- * The table is the reference list: rank, ticker, company, price, 24h, market
- * cap, on-chain liquidity, and a 7-day sparkline drawn from the same history
- * endpoint the drawer's candle chart uses. Sorting is client-side over the rows
- * the API returned; nothing is fetched again to sort.
+ * The table is the picker: a tick, the ticker and company, rank, price and 24h.
+ * Market cap and on-chain liquidity moved into the drawer, which is now the only
+ * place they are shown, and the row-level sparkline went with them — so this
+ * module no longer fetches twenty histories the page has nowhere to draw.
+ * Sorting is client-side over the rows the API returned; nothing is refetched.
  *
- * Sparklines are loaded after the table paints, four at a time, and a symbol
- * with no history keeps the shipped hairline — "no data" is a state, not a bug.
+ * The tick is a checkbox, not an Add button: it toggles a stock in AND out, so
+ * `data-picked` on the row and `aria-checked` on the tick are always written
+ * together and can never disagree.
  */
 
 import * as api from '../api.js';
-import { buildSparkline, seriesDirection, createPriceChart } from '../charts.js';
+import { createPriceChart } from '../charts.js';
 import {
   fmtUsd,
   fmtUsdCompact,
@@ -25,17 +27,11 @@ import {
 } from '../format.js';
 import { copyToClipboard } from './toast.js';
 
-const SPARK_RANGE = '1mo';
-const SPARK_POINTS = 7;
-const SPARK_CONCURRENCY = 4;
-
-const SORTABLE = new Set(['rank', 'price', 'change24h', 'underlyingMcap', 'liquidityUsd']);
+const SORTABLE = new Set(['rank', 'price', 'change24h']);
 const FIELD_OF = {
   rank: 'rank',
   price: 'priceUsd',
   change24h: 'change24h',
-  underlyingMcap: 'underlyingMcap',
-  liquidityUsd: 'liquidityUsd',
 };
 
 /** Sort with nulls last in both directions — an unknown price is not "cheapest". */
@@ -52,25 +48,7 @@ function compare(a, b, field, direction) {
   return direction === 'ascending' ? delta : -delta;
 }
 
-function fillLogo(scope, stock) {
-  const mono = scope.querySelector('[data-field="mono"]');
-  const img = scope.querySelector('[data-field="logo"]');
-  if (mono) mono.textContent = monogram(stock.symbol);
-  if (img) {
-    if (stock.logo) {
-      img.src = stock.logo;
-      img.alt = '';
-      img.hidden = false;
-      img.addEventListener('error', () => {
-        img.hidden = true;
-      });
-    } else {
-      img.hidden = true;
-    }
-  }
-}
-
-export function createStocks({ onAdd, isPicked, canAdd, onRetry } = {}) {
+export function createStocks({ onAdd, onToggle, isPicked, canAdd, onRetry } = {}) {
   const table = document.getElementById('stocks-table');
   const body = document.getElementById('stocks-body');
   const updatedEl = document.getElementById('stocks-updated');
@@ -103,9 +81,13 @@ export function createStocks({ onAdd, isPicked, canAdd, onRetry } = {}) {
       render() {},
       setLoading() {},
       setError() {},
-      refreshAddButtons() {},
+      refreshTicks() {},
       applyTheme() {},
       closeDrawer() {},
+      find: () => null,
+      get stocks() {
+        return [];
+      },
     };
   }
 
@@ -118,8 +100,6 @@ export function createStocks({ onAdd, isPicked, canAdd, onRetry } = {}) {
   let chart = null;
   let historyToken = 0;
 
-  const sparkCache = new Map(); // symbol -> number[] | null (null = asked, nothing there)
-
   /* -------------------------------------------------------------- rows -- */
 
   function buildRow(stock) {
@@ -127,8 +107,8 @@ export function createStocks({ onAdd, isPicked, canAdd, onRetry } = {}) {
     node.dataset.mint = stock.mint || '';
     node.dataset.symbol = stock.symbol || '';
 
+    // The number only: the `#` in front of it is drawn by CSS.
     node.querySelector('[data-field="rank"]').textContent = stock.rank ?? DASH;
-    fillLogo(node, stock);
 
     const ticker = node.querySelector('[data-action="open-stock"]');
     ticker.textContent = stock.symbol || DASH;
@@ -147,42 +127,36 @@ export function createStocks({ onAdd, isPicked, canAdd, onRetry } = {}) {
       change.dataset.dir = dirOf(stock.change24h);
     }
 
-    node.querySelector('[data-field="mcap"]').textContent =
-      stock.underlyingMcap === null || stock.underlyingMcap === undefined ? DASH : fmtUsdCompact(stock.underlyingMcap);
-    node.querySelector('[data-field="liquidity"]').textContent =
-      stock.liquidityUsd === null || stock.liquidityUsd === undefined ? DASH : fmtUsdCompact(stock.liquidityUsd);
-
-    const spark = node.querySelector('[data-field="spark"]');
-    paintSpark(spark, sparkCache.get(stock.symbol));
-
-    const addBtn = node.querySelector('[data-action="add-stock"]');
-    setAddButton(addBtn, stock);
+    setTick(node, stock);
 
     if (openStock && openStock.mint === stock.mint) node.classList.add('is-active');
     return node;
   }
 
-  function paintSpark(sparkEl, series) {
-    if (!sparkEl) return;
-    if (!Array.isArray(series) || series.length < 2) {
-      sparkEl.dataset.dir = 'flat';
-      return; // leave the shipped .spark__empty hairline in place
-    }
-    const svg = buildSparkline(series);
-    if (!svg) return;
-    sparkEl.replaceChildren(svg);
-    sparkEl.dataset.dir = seriesDirection(series);
-  }
-
-  function setAddButton(btn, stock) {
-    if (!btn) return;
+  /**
+   * The tick is a checkbox. The gold wash on the row comes from `data-picked`
+   * and the semantics from `aria-checked`, so both are written here, together,
+   * and never anywhere else.
+   */
+  function setTick(row, stock) {
+    const tick = row.querySelector('[data-action="toggle-pick"]');
+    if (!tick) return;
     const picked = typeof isPicked === 'function' && isPicked(stock.mint);
     const room = typeof canAdd === 'function' ? canAdd(stock.mint) : true;
-    btn.textContent = picked ? 'Added' : 'Add';
-    btn.disabled = picked || !room;
-    btn.setAttribute(
+    const name = stock.symbol || 'this stock';
+
+    row.dataset.picked = picked ? 'true' : 'false';
+    tick.setAttribute('aria-checked', picked ? 'true' : 'false');
+    // A full basket only blocks adding. Removing is always allowed, or there
+    // would be no way out of the full state.
+    tick.disabled = !picked && !room;
+    tick.setAttribute(
       'aria-label',
-      picked ? `${stock.symbol} is already in your basket` : `Add ${stock.symbol} to your basket`,
+      picked
+        ? `Remove ${name} from your basket`
+        : room
+          ? `Add ${name} to your basket`
+          : 'Basket is full — remove one first',
     );
   }
 
@@ -229,32 +203,6 @@ export function createStocks({ onAdd, isPicked, canAdd, onRetry } = {}) {
 
   syncSortHeaders();
 
-  /* ------------------------------------------------------- sparkline load -- */
-
-  async function loadSparklines(list) {
-    const queue = list.filter((s) => s.symbol && !sparkCache.has(s.symbol));
-    if (queue.length === 0) return;
-
-    let cursor = 0;
-    const workers = new Array(Math.min(SPARK_CONCURRENCY, queue.length)).fill(null).map(async () => {
-      while (cursor < queue.length) {
-        const stock = queue[cursor++];
-        try {
-          const doc = await api.getHistory(stock.symbol, SPARK_RANGE, { timeout: 15000 });
-          const closes = (Array.isArray(doc?.candles) ? doc.candles : [])
-            .map((c) => Number(c.c))
-            .filter((n) => Number.isFinite(n));
-          sparkCache.set(stock.symbol, closes.length >= 2 ? closes.slice(-SPARK_POINTS) : null);
-        } catch (err) {
-          sparkCache.set(stock.symbol, null); // asked, nothing to draw. Do not retry in a loop.
-        }
-        const row = body.querySelector(`tr[data-symbol="${CSS.escape(stock.symbol)}"] [data-field="spark"]`);
-        paintSpark(row, sparkCache.get(stock.symbol));
-      }
-    });
-    await Promise.all(workers);
-  }
-
   /* --------------------------------------------------------------- drawer -- */
 
   function ensureChart() {
@@ -280,12 +228,6 @@ export function createStocks({ onAdd, isPicked, canAdd, onRetry } = {}) {
       }
       const drawn = ensureChart()?.setData(candles, doc.kind === 'line' ? 'line' : 'candles');
       setChartState(drawn ? 'ready' : 'empty');
-      if (drawn) {
-        // The candle series is the underlying listed company, so keep the
-        // sparkline cache in step with what the drawer just fetched.
-        const closes = candles.map((c) => Number(c.c)).filter((n) => Number.isFinite(n));
-        if (closes.length >= 2 && range === SPARK_RANGE) sparkCache.set(openStock.symbol, closes.slice(-SPARK_POINTS));
-      }
     } catch (err) {
       if (token !== historyToken) return;
       if (chartError) chartError.textContent = api.errorText(err, 'The history source did not respond.');
@@ -446,10 +388,11 @@ export function createStocks({ onAdd, isPicked, canAdd, onRetry } = {}) {
   /* -------------------------------------------------------- row delegation -- */
 
   body.addEventListener('click', (event) => {
-    const addBtn = event.target.closest('[data-action="add-stock"]');
-    if (addBtn) {
-      const row = addBtn.closest('tr[data-mint]');
-      if (row && typeof onAdd === 'function') onAdd(row.dataset.mint);
+    // The tick owns its own click: it toggles, and it never opens the drawer.
+    const tick = event.target.closest('[data-action="toggle-pick"]');
+    if (tick) {
+      const row = tick.closest('tr[data-mint]');
+      if (row && typeof onToggle === 'function') onToggle(row.dataset.mint);
       return;
     }
     const row = event.target.closest('tr[data-clickable="true"]');
@@ -493,15 +436,13 @@ export function createStocks({ onAdd, isPicked, canAdd, onRetry } = {}) {
           refreshDrawerAdd();
         }
       }
-
-      loadSparklines(stocks);
     },
 
-    /** Re-evaluate every Add button after the basket changed. */
-    refreshAddButtons() {
+    /** Re-tick every row after the basket changed. No rebuild, no refetch. */
+    refreshTicks() {
       for (const row of body.querySelectorAll('tr[data-mint]')) {
         const stock = stocks.find((s) => s.mint === row.dataset.mint);
-        if (stock) setAddButton(row.querySelector('[data-action="add-stock"]'), stock);
+        if (stock) setTick(row, stock);
       }
       refreshDrawerAdd();
     },

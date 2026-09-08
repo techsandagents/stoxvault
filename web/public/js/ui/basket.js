@@ -13,8 +13,7 @@
 
 import * as api from '../api.js';
 import * as wallet from '../wallet.js';
-import { buildDonutArcs } from '../charts.js';
-import { fmtShare, fmtSol, fmtInt, fmtTokenAmount, monogram, num, DASH } from '../format.js';
+import { fmtInt, fmtTokenAmount, monogram, num, DASH } from '../format.js';
 import { toast } from './toast.js';
 
 const STEP = 5;
@@ -199,18 +198,10 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
   const addList = document.getElementById('basket-add-list');
   const addCount = document.getElementById('basket-add-count');
 
-  const donutArcs = document.getElementById('donut-arcs');
-  const donutPlaceholder = document.getElementById('donut-placeholder');
-  const donutValue = document.getElementById('donut-center-value');
-  const donutCaption = document.getElementById('donut-caption');
-  const donutLegend = document.getElementById('donut-legend');
-  const legendTpl = document.getElementById('tpl-legend-row');
-
   const projection = document.getElementById('projection');
   const projBalance = document.getElementById('proj-balance');
   const projEligibility = document.getElementById('proj-eligibility');
   const projShare = document.getElementById('proj-share');
-  const projPool = document.getElementById('proj-pool');
   const projNote = document.getElementById('proj-note');
   const projCycleRow = document.getElementById('proj-cycle-row');
   const projCycle = document.getElementById('proj-cycle');
@@ -228,13 +219,17 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
       renderConfig() {},
       renderUniverse() {},
       renderMe() {},
+      setMode() {},
+      setMeError() {},
       setDisconnected() {},
       setLoading() {},
       setError() {},
       addStock() {},
+      togglePick: () => null,
       isPicked: () => false,
       canAdd: () => false,
       picks: () => [],
+      mints: () => [],
     };
   }
 
@@ -254,7 +249,6 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
   let connected = false;
   let me = null;
   let mode = 'DRY_RUN';
-  let poolSol = null;
   let filter = '';
   let saving = false;
   let loadedUniverse = false;
@@ -365,11 +359,19 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
     if (typeof onChange === 'function') onChange(working.map((p) => ({ ...p })));
   }
 
-  function stepPct(mint, direction) {
-    const pick = working.find((p) => p.mint === mint);
-    if (!pick) return;
-    const next = clamp(Math.round(pick.pct / STEP) * STEP + direction * STEP, rules.minPct, rules.maxPct);
-    setPct(mint, next, { rebuild: true });
+  /**
+   * The tick in the Top 20 table is a checkbox, so one call has to do both
+   * directions. Adding takes the smallest legal percent and auto-balances;
+   * removing re-spreads what is left.
+   * @returns {'added'|'removed'|null}
+   */
+  function toggleMint(mint) {
+    if (!mint) return null;
+    if (working.some((p) => p.mint === mint)) {
+      removeMint(mint);
+      return 'removed';
+    }
+    return addMint(mint) ? 'added' : null;
   }
 
   /* ------------------------------------------------------------- rendering */
@@ -386,21 +388,15 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
     const delisted = universeKnown() && !index.has(pick.mint);
     node.querySelector('[data-field="name"]').textContent = stock?.name || (delisted ? 'not in the current top 20' : '');
 
-    const mono = node.querySelector('[data-field="mono"]');
-    const img = node.querySelector('[data-field="logo"]');
-    if (mono) mono.textContent = monogram(symbol);
-    if (img && stock?.logo) {
-      img.src = stock.logo;
-      img.alt = '';
-      img.hidden = false;
-      img.addEventListener('error', () => {
-        img.hidden = true;
-      });
-    }
+    const pct = clamp(Number(pick.pct) || 0, 0, 100);
+    node.querySelector('[data-field="pctText"]').textContent = `${pick.pct}%`;
 
-    const bar = node.querySelector('[data-field="bar"]');
-    if (bar) bar.style.width = `${clamp(Number(pick.pct) || 0, 0, 100)}%`;
+    // The only custom property this app sets, and the only way the gold filled
+    // half of the slider track is drawn. Required on every render.
+    node.style.setProperty('--pct', String(pct));
 
+    // A `range` input handles Arrow/Home/End/PageUp natively at step 5, so
+    // there is deliberately no key handler fighting it.
     const input = node.querySelector('[data-field="pct"]');
     input.value = String(pick.pct);
     input.min = String(rules.minPct);
@@ -408,20 +404,10 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
     input.step = String(STEP);
     input.setAttribute('aria-label', `${symbol} allocation percent`);
 
-    const dec = node.querySelector('[data-action="dec"]');
-    const inc = node.querySelector('[data-action="inc"]');
-    dec.setAttribute('aria-label', `Decrease ${symbol} allocation`);
-    inc.setAttribute('aria-label', `Increase ${symbol} allocation`);
-    dec.disabled = pick.pct <= rules.minPct;
-    inc.disabled = pick.pct >= rules.maxPct;
-
     const remove = node.querySelector('[data-action="remove"]');
     remove.setAttribute('aria-label', `Remove ${symbol} from basket`);
 
-    if (invalid) {
-      node.classList.add('is-invalid');
-      node.querySelector('.stepper')?.classList.add('is-invalid');
-    }
+    if (invalid) node.classList.add('is-invalid');
 
     // A saved pick whose stock fell out of the top 20 still counts — the engine
     // re-spreads its share — so say that instead of silently dropping it. Only
@@ -430,7 +416,7 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
     if (delisted) {
       node.classList.add('is-stale');
       const note = document.createElement('span');
-      note.className = 'pick-row__note';
+      note.className = 'pick__note';
       note.textContent = 'No longer in the top 20 — its share is spread across your other picks';
       node.appendChild(note);
     }
@@ -456,42 +442,6 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
     working.forEach((pick, i) => frag.appendChild(pickRow(pick, i, state.badMints.has(pick.mint))));
     picksList.replaceChildren(frag);
     picksState.dataset.state = 'ready';
-  }
-
-  function renderDonut(state) {
-    if (!donutArcs) return;
-    const slices = working.map((pick) => ({
-      pct: clamp(Number(pick.pct) || 0, 0, 100),
-      mint: pick.mint,
-      symbol: index.get(pick.mint)?.symbol || '',
-    }));
-
-    donutArcs.replaceChildren(buildDonutArcs(slices));
-    if (donutPlaceholder) donutPlaceholder.hidden = slices.length > 0;
-    if (donutValue) donutValue.textContent = slices.length === 0 ? DASH : `${state.total}%`;
-    if (donutCaption) {
-      donutCaption.textContent =
-        slices.length === 0
-          ? 'Nothing allocated yet.'
-          : `${slices.length} stock${slices.length === 1 ? '' : 's'} · ${state.total}% allocated`;
-    }
-
-    if (donutLegend && legendTpl) {
-      const frag = document.createDocumentFragment();
-      slices.forEach((slice, i) => {
-        const row = legendTpl.content.firstElementChild.cloneNode(true);
-        row.dataset.slice = String(i % 5);
-        row.dataset.mint = slice.mint;
-        row.querySelector('[data-field="symbol"]').textContent = slice.symbol || truncatedMint(slice.mint);
-        row.querySelector('[data-field="pct"]').textContent = fmtShare(slice.pct);
-        frag.appendChild(row);
-      });
-      donutLegend.replaceChildren(frag);
-    }
-  }
-
-  function truncatedMint(mint) {
-    return typeof mint === 'string' && mint.length > 9 ? `${mint.slice(0, 4)}…${mint.slice(-4)}` : mint || DASH;
   }
 
   function renderPicker() {
@@ -602,7 +552,6 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
     }
 
     if (autoBtn) autoBtn.disabled = working.length === 0 || state.total === 100;
-    renderDonut(state);
     renderPicker();
     return state;
   }
@@ -685,7 +634,11 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
       projShare.textContent = bps === null || bps === undefined ? DASH : `${(bps / 100).toFixed(2)}% of the pool`;
     }
 
-    if (projPool) projPool.textContent = poolSol === null ? DASH : `${fmtSol(poolSol, 3)} SOL`;
+    // The pool figure used to sit here, straight from /api/vault. It was
+    // removed with the vault card: printing it would republish the balance in
+    // the one place it was not being looked for. The share percentage below
+    // stays — it says how much of the pool is yours without saying how big the
+    // pool is.
 
     renderCycle(me.cycle);
 
@@ -831,51 +784,39 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
   /* ------------------------------------------------------------- events -- */
 
   picksList.addEventListener('click', (event) => {
-    const row = event.target.closest('.pick-row[data-mint]');
+    const row = event.target.closest('.pick[data-mint]');
     if (!row) return;
-    const mint = row.dataset.mint;
-    if (event.target.closest('[data-action="inc"]')) stepPct(mint, +1);
-    else if (event.target.closest('[data-action="dec"]')) stepPct(mint, -1);
-    else if (event.target.closest('[data-action="remove"]')) removeMint(mint);
+    if (event.target.closest('[data-action="remove"]')) removeMint(row.dataset.mint);
   });
 
+  // Live drag. The row is NOT rebuilt here — that would tear the slider out
+  // from under the pointer — so the three things the row shows are updated in
+  // place: the value, the percent label and the gold filled track.
   picksList.addEventListener('input', (event) => {
     const input = event.target.closest('[data-field="pct"]');
     if (!input) return;
-    const row = input.closest('.pick-row[data-mint]');
+    const row = input.closest('.pick[data-mint]');
     if (!row) return;
     const raw = Number(input.value);
     if (!Number.isFinite(raw)) return;
-    // Validate live, but do not fight the user's cursor: no rebuild on input.
     const pick = working.find((p) => p.mint === row.dataset.mint);
-    if (pick) {
-      pick.pct = clamp(Math.round(raw), rules.minPct, rules.maxPct);
-      const bar = row.querySelector('[data-field="bar"]');
-      if (bar) bar.style.width = `${pick.pct}%`;
-      row.querySelector('[data-action="dec"]').disabled = pick.pct <= rules.minPct;
-      row.querySelector('[data-action="inc"]').disabled = pick.pct >= rules.maxPct;
-      refreshSummary();
-      if (typeof onChange === 'function') onChange(working.map((p) => ({ ...p })));
-    }
+    if (!pick) return;
+
+    pick.pct = clamp(Math.round(raw), rules.minPct, rules.maxPct);
+    const label = row.querySelector('[data-field="pctText"]');
+    if (label) label.textContent = `${pick.pct}%`;
+    row.style.setProperty('--pct', String(pick.pct));
+    refreshSummary();
+    if (typeof onChange === 'function') onChange(working.map((p) => ({ ...p })));
   });
 
+  // Drag finished: now a rebuild is safe, and it is what re-applies the
+  // is-invalid class to whichever row is the reason the basket does not add up.
   picksList.addEventListener('change', (event) => {
     const input = event.target.closest('[data-field="pct"]');
     if (!input) return;
-    const row = input.closest('.pick-row[data-mint]');
+    const row = input.closest('.pick[data-mint]');
     if (row) setPct(row.dataset.mint, input.value, { rebuild: true });
-  });
-
-  picksList.addEventListener('keydown', (event) => {
-    const input = event.target.closest('[data-field="pct"]');
-    if (!input) return;
-    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-    event.preventDefault();
-    const row = input.closest('.pick-row[data-mint]');
-    if (!row) return;
-    stepPct(row.dataset.mint, event.key === 'ArrowUp' ? +1 : -1);
-    const again = picksList.querySelector(`.pick-row[data-mint="${CSS.escape(row.dataset.mint)}"] [data-field="pct"]`);
-    if (again) again.focus();
   });
 
   if (addList) {
@@ -996,15 +937,6 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
       if (typeof onChange === 'function') onChange(working.map((p) => ({ ...p })));
     },
 
-    /** The pool figure shown in the projection panel comes from /api/vault. */
-    setPool(sol) {
-      // num() and not Number(): Number(null) is 0, which would turn an
-      // unreadable vault balance into a claim that the pool is empty, while the
-      // Vault panel right below prints an em dash for the same figure.
-      poolSol = num(sol);
-      if (connected) renderProjection();
-    },
-
     setMode(nextMode) {
       mode = nextMode || mode;
       renderProjection();
@@ -1047,6 +979,7 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
     },
 
     addStock: addMint,
+    togglePick: toggleMint,
     isPicked: (mint) => working.some((p) => p.mint === mint),
     canAdd: (mint) => working.length < rules.maxPicks && !working.some((p) => p.mint === mint),
     picks: () => working.map((p) => ({ ...p })),

@@ -299,8 +299,9 @@ export const getHistory = (symbol, range = '1mo', opts) =>
 /** GET /api/stats */
 export const getStats = (opts) => request('/api/stats', opts);
 
-/** GET /api/vault */
-export const getVault = (opts) => request('/api/vault', opts);
+// `/api/vault` still exists on the server and is unchanged. The site no longer
+// calls it: the vault balance was taken off the page, and a helper here would
+// be an invitation to put it back.
 
 /** GET /api/prefs/:wallet — public, no token needed. */
 export const getPrefs = (wallet, opts) => request(`/api/prefs/${encodeURIComponent(wallet)}`, opts);
@@ -385,7 +386,6 @@ export default {
   getUniverse,
   getHistory,
   getStats,
-  getVault,
   getPrefs,
   getHolders,
   getRounds,

@@ -10,10 +10,12 @@
 
 import * as api from './api.js';
 import * as wallet from './wallet.js';
+import { createTabs } from './tabs.js';
 import { createTape } from './ui/tape.js';
 import { createStocks } from './ui/stocks.js';
 import { createBasket } from './ui/basket.js';
-import { createVault } from './ui/vault.js';
+import { createRound } from './ui/round.js';
+import { createHolders } from './ui/holders.js';
 import { createRounds } from './ui/rounds.js';
 import { createDemand } from './ui/demand.js';
 import { toast, copyToClipboard } from './ui/toast.js';
@@ -21,15 +23,12 @@ import { coinButtonState, snapshotRuleCopy } from './rules.js';
 import {
   num,
   fmtSol,
-  fmtUsd,
   fmtInt,
   fmtTimeUtc,
-  fmtRelative,
   fmtCountdown,
   countdownSentence,
   createCountdown,
   truncAddr,
-  isoOf,
   DASH,
 } from './format.js';
 
@@ -43,8 +42,7 @@ const BASE_TITLE = document.title;
 
 const POLL = {
   prices: 30000, // the tape and the table
-  stats: 60000, // hero numbers + community demand
-  vault: 60000,
+  stats: 60000, // the round card, the holder card and community demand
   rounds: 300000,
 };
 
@@ -66,7 +64,6 @@ const state = {
   config: null,
   universe: null,
   stats: null,
-  vault: null,
   me: null,
   mode: 'OFFLINE',
   stockIndex: new Map(),
@@ -128,14 +125,37 @@ applyTheme(readTheme());
 
 const tape = createTape({ onRetry: () => loadUniverse({ toastOnError: true }) });
 
+function symbolOf(mint) {
+  return state.stockIndex.get(mint)?.symbol || 'That stock';
+}
+
 const stocks = createStocks({
+  // The drawer's button only ever adds.
   onAdd: (mint) => {
     if (basket.addStock(mint)) {
-      const stock = state.stockIndex.get(mint);
       toast({
         kind: 'success',
         title: 'Added to your basket',
-        text: `${stock?.symbol || 'That stock'} is in your basket. Save it to make it count.`,
+        text: `${symbolOf(mint)} is in your basket. Save it to make it count.`,
+        key: 'basket-add',
+      });
+    }
+  },
+  // The tick in the table is a checkbox: it goes both ways.
+  onToggle: (mint) => {
+    const result = basket.togglePick(mint);
+    if (result === 'added') {
+      toast({
+        kind: 'success',
+        title: 'Added to your basket',
+        text: `${symbolOf(mint)} is in your basket. Save it to make it count.`,
+        key: 'basket-add',
+      });
+    } else if (result === 'removed') {
+      toast({
+        kind: 'info',
+        title: 'Removed from your basket',
+        text: `${symbolOf(mint)} is out. The rest were re-balanced.`,
         key: 'basket-add',
       });
     }
@@ -147,7 +167,7 @@ const stocks = createStocks({
 
 const basket = createBasket({
   onChange: () => {
-    stocks.refreshAddButtons();
+    stocks.refreshTicks();
     demand.setMine(basket.mints());
   },
   onConnect: () => openWalletModal(),
@@ -158,7 +178,9 @@ const basket = createBasket({
   getStock: (mint) => state.stockIndex.get(mint) || null,
 });
 
-const vault = createVault();
+const round = createRound({ onRetry: () => loadConfig({ toastOnError: true }).catch(() => {}) });
+
+const holders = createHolders({ onRetry: () => loadStats({ toastOnError: true }).catch(() => {}) });
 
 const demand = createDemand({ onRetry: () => loadStats({ toastOnError: true }) });
 
@@ -169,27 +191,28 @@ const rounds = createRounds({
 
 /* -------------------------------------------------------------- countdown -- */
 
-const countdownValue = document.getElementById('countdown-value');
-const countdownSr = document.getElementById('countdown-sr');
-const nextRoundAtEl = document.getElementById('stat-next-round-at');
-
 let lastSrMinute = null;
 
+/**
+ * One clock for the whole page.
+ *
+ * The document title is written here rather than in the round card, because the
+ * title has to keep counting while the Overview panel is hidden — a tab in the
+ * background is exactly when someone reads it. Everything that is *drawn* (the
+ * digits, the ring, the schedule line) is handed to the round card, which
+ * ignores it while its panel is offscreen and repaints once on the way back.
+ */
 const countdown = createCountdown({
   onTick: ({ seconds, text, target }) => {
-    if (countdownValue) countdownValue.textContent = seconds === null ? '--:--:--' : text;
+    round.tick({ seconds, text, target });
 
     if (seconds !== null && target) {
       document.title = `${BRAND} — next round in ${fmtCountdown(seconds)}`;
-      if (nextRoundAtEl) {
-        nextRoundAtEl.textContent = `${fmtTimeUtc(target)} UTC · ${fmtRelative(target)}`;
-        nextRoundAtEl.title = isoOf(target);
-      }
       // The live region is coarse and updates at most once a minute.
       const minute = Math.floor(seconds / 60);
-      if (countdownSr && minute !== lastSrMinute) {
+      if (minute !== lastSrMinute) {
         lastSrMinute = minute;
-        countdownSr.textContent = countdownSentence(seconds);
+        round.say(countdownSentence(seconds));
       }
       // The mark has passed: the keeper runs within its jitter window, so pick
       // up the server's new target rather than counting into the negative.
@@ -378,33 +401,21 @@ function renderSnapshotRule(config) {
   textEl.replaceChildren(copy.before, interval, copy.after);
 }
 
-/* -------------------------------------------------------------- hero stats -- */
+/* ------------------------------------------------------------ ledger head -- */
 
-function renderStats(stats) {
-  const heroStats = document.getElementById('hero-stats');
-
-  const vaultSol = document.getElementById('stat-vault-sol');
-  const vaultUsd = document.getElementById('stat-vault-usd');
-  if (vaultSol) vaultSol.textContent = stats?.vault?.balanceSol === null || stats?.vault?.balanceSol === undefined ? DASH : fmtSol(stats.vault.balanceSol, 3);
-  if (vaultUsd) {
-    vaultUsd.textContent =
-      stats?.vault?.balanceUsd === null || stats?.vault?.balanceUsd === undefined ? DASH : `≈ ${fmtUsd(stats.vault.balanceUsd)}`;
-  }
-
-  const prefWallets = document.getElementById('stat-pref-wallets');
-  if (prefWallets) prefWallets.textContent = fmtInt(stats?.prefHolders ?? 0);
-
-  const eligible = document.getElementById('stat-eligible-wallets');
-  if (eligible) {
-    if (!stats?.launched) eligible.textContent = `${DASH} eligible holders (no token yet)`;
-    else if (stats.eligibleHolders === null || stats.eligibleHolders === undefined) eligible.textContent = 'eligible holders unknown';
-    else eligible.textContent = `${fmtInt(stats.eligibleHolders)} eligible holders`;
-  }
-
+/**
+ * The two figures above the round table. They describe the ledger, so they live
+ * with it in the Rounds panel rather than in an Overview card.
+ *
+ * `totalSolDistributed` is the public total and the server keeps simulated
+ * rounds out of it — the dry-run figure is reported separately under
+ * `rounds.simulated` and is deliberately not added in here.
+ */
+function renderLedgerHead(stats) {
   const distributed = document.getElementById('stat-distributed');
   if (distributed) {
-    const total = stats?.rounds?.totalSolDistributed;
-    distributed.textContent = total === null || total === undefined ? DASH : fmtSol(total, 3);
+    const total = num(stats?.rounds?.totalSolDistributed);
+    distributed.textContent = total === null ? DASH : fmtSol(total, 3);
   }
 
   const roundsCount = document.getElementById('stat-rounds-count');
@@ -416,22 +427,15 @@ function renderStats(stats) {
       roundsCount.textContent = `${fmtInt(count)} round${count === 1 ? '' : 's'}${last}`;
     }
   }
-
-  if (heroStats) heroStats.dataset.state = 'ready';
 }
 
-function statsError() {
-  const heroStats = document.getElementById('hero-stats');
-  for (const id of ['stat-vault-sol', 'stat-vault-usd', 'stat-pref-wallets', 'stat-distributed']) {
+function ledgerHeadError() {
+  // Em dashes, not zeros: "nothing was distributed" and "we could not ask" are
+  // different claims and only one of them is true.
+  for (const id of ['stat-distributed', 'stat-rounds-count']) {
     const el = document.getElementById(id);
     if (el) el.textContent = DASH;
   }
-  const eligible = document.getElementById('stat-eligible-wallets');
-  if (eligible) eligible.textContent = 'could not reach the API';
-  const roundsCount = document.getElementById('stat-rounds-count');
-  if (roundsCount) roundsCount.textContent = DASH;
-  // The hero has no error pane; unmasking with em dashes is the honest state.
-  if (heroStats) heroStats.dataset.state = 'ready';
 }
 
 /* ----------------------------------------------------------------- loaders -- */
@@ -449,7 +453,8 @@ async function loadConfig({ toastOnError = false } = {}) {
     // `#step-interval` span this rewrite re-creates.
     renderSnapshotRule(config);
     basket.renderConfig(config);
-    vault.renderConfig(config);
+    round.renderConfig(config);
+    holders.renderConfig(config);
     rounds.renderConfig(config);
     countdown.setTarget(config.nextRoundAt);
     countdown.start();
@@ -457,7 +462,7 @@ async function loadConfig({ toastOnError = false } = {}) {
     return config;
   } catch (err) {
     setMode('OFFLINE');
-    if (countdownValue) countdownValue.textContent = '--:--:--';
+    round.setError(api.errorText(err, 'The server did not answer.'));
     if (toastOnError) {
       toast({
         kind: 'error',
@@ -501,34 +506,20 @@ async function loadStats({ toastOnError = false } = {}) {
     const stats = await api.getStats();
     state.stats = stats;
     if (stats.mode && stats.mode !== state.mode) setMode(stats.mode);
-    renderStats(stats);
+    holders.render(stats);
+    renderLedgerHead(stats);
     demand.render(stats, state.stockIndex);
     demand.setMine(basket.mints());
     if (stats.nextRoundAt) countdown.setTarget(stats.nextRoundAt);
     markFetched();
     return stats;
   } catch (err) {
-    statsError();
+    const text = api.errorText(err, 'The API did not respond.');
+    holders.setError(text);
+    ledgerHeadError();
     demand.setError(api.errorText(err, 'Demand could not be loaded.'));
     if (toastOnError) {
       toast({ kind: 'error', title: 'Stats unavailable', text: api.errorText(err), key: 'stats', onRetry: () => loadStats() });
-    }
-    throw err;
-  }
-}
-
-async function loadVault({ toastOnError = false } = {}) {
-  try {
-    const doc = await api.getVault();
-    state.vault = doc;
-    vault.render(doc, state.stockIndex);
-    basket.setPool(doc.poolSol);
-    markFetched();
-    return doc;
-  } catch (err) {
-    vault.setError();
-    if (toastOnError) {
-      toast({ kind: 'error', title: 'Vault unavailable', text: api.errorText(err), key: 'vault', onRetry: () => loadVault() });
     }
     throw err;
   }
@@ -595,12 +586,15 @@ function applyConnected(me) {
   if (connectBtn) connectBtn.setAttribute('aria-label', `Connected as ${address}`);
   if (disconnectBtn) disconnectBtn.hidden = false;
 
-  basket.renderMe(me, {
+  const token = {
     tokenSymbol: state.config?.token?.symbol || null,
     tokenDecimals: state.config?.token?.decimals ?? null,
-  });
+  };
+  basket.renderMe(me, token);
+  holders.renderMe(me);
+  round.renderMe(me, token);
   demand.setMine(basket.mints());
-  stocks.refreshAddButtons();
+  stocks.refreshTicks();
 }
 
 function applyDisconnected() {
@@ -616,8 +610,10 @@ function applyDisconnected() {
   if (disconnectBtn) disconnectBtn.hidden = true;
 
   basket.setDisconnected();
+  holders.setDisconnected();
+  round.setDisconnected();
   demand.setMine([]);
-  stocks.refreshAddButtons();
+  stocks.refreshTicks();
 }
 
 /* ---------------------------------------------------------- wallet modal -- */
@@ -771,38 +767,36 @@ if (refreshBtn) {
   });
 }
 
-/* ------------------------------------------------------------ nav current -- */
+/* ------------------------------------------------------------------ tabs -- */
 
-function watchSections() {
-  const links = [...document.querySelectorAll('[data-nav-link]')];
-  if (links.length === 0 || typeof IntersectionObserver === 'undefined') return;
-
-  const sections = links
-    .map((link) => ({ link, section: document.getElementById(link.dataset.navLink) }))
-    .filter((entry) => entry.section);
-
-  const visible = new Map();
-  const observer = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) visible.set(entry.target.id, entry.isIntersecting ? entry.intersectionRatio : 0);
-      let bestId = null;
-      let bestRatio = 0;
-      for (const [id, ratio] of visible) {
-        if (ratio > bestRatio) {
-          bestRatio = ratio;
-          bestId = id;
-        }
-      }
-      for (const { link } of sections) {
-        if (bestId && link.dataset.navLink === bestId) link.setAttribute('aria-current', 'true');
-        else link.removeAttribute('aria-current');
-      }
-    },
-    { rootMargin: '-96px 0px -55% 0px', threshold: [0, 0.15, 0.4, 0.75] },
-  );
-
-  for (const { section } of sections) observer.observe(section);
+/**
+ * Switching a tab fetches nothing.
+ *
+ * Every panel's data is loaded on boot and kept fresh by the pollers, whether or
+ * not it is on screen, so opening a tab never shows a spinner for something that
+ * already arrived. What tabs DO control is work: a CSS marquee, an SVG ring and
+ * a set of bars all cost frames in a `hidden` panel, so each module is told
+ * whether it is visible and stops painting when it is not. None of them rebuild
+ * from scratch on the way back — they repaint only if the data moved while they
+ * were away.
+ */
+function applyVisibility() {
+  const tab = tabs.current();
+  const awake = !document.hidden;
+  tape.setVisible(awake && tab === 'overview');
+  round.setVisible(awake && tab === 'overview');
+  demand.setVisible(awake && tab === 'demand');
 }
+
+const tabs = createTabs({
+  onSelect: (name, previous) => {
+    applyVisibility();
+    // The candle chart holds a lightweight-charts instance and an animation
+    // frame. Leaving the Basket panel with the drawer open would keep both
+    // alive behind a hidden panel, so close it on the way out.
+    if (previous === 'basket' && name !== 'basket') stocks.closeDrawer();
+  },
+});
 
 /* ---------------------------------------------------------------- polling -- */
 
@@ -825,12 +819,6 @@ function startPolling() {
       loadStats().catch(() => {});
       if (api.session.get()) loadMe().catch(() => {});
     }, POLL.stats),
-  );
-  timers.set(
-    'vault',
-    setInterval(() => {
-      loadVault().catch(() => {});
-    }, POLL.vault),
   );
   timers.set(
     'rounds',
@@ -874,10 +862,12 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     stopPolling();
     countdown.stop();
+    applyVisibility(); // a background tab animates nothing
     return;
   }
   countdown.start();
   startPolling();
+  applyVisibility();
 
   // Coming back to a stale tab: refresh the cheap things immediately, but only
   // if enough time has passed that they could have changed.
@@ -895,7 +885,6 @@ async function refreshAll({ toastOnError = false } = {}) {
     loadConfig({ toastOnError }),
     loadUniverse({ toastOnError }),
     loadStats({ toastOnError }),
-    loadVault({ toastOnError }),
     loadRounds({ toastOnError }),
   ]);
   if (api.session.get()) await loadMe();
@@ -904,26 +893,31 @@ async function refreshAll({ toastOnError = false } = {}) {
 
 async function boot() {
   renderFooterApi();
-  watchSections();
   wallet.discover();
   renderWalletOptions();
 
   tape.setLoading();
   stocks.setLoading();
   basket.setLoading();
-  vault.setLoading();
+  round.setLoading();
+  holders.setLoading();
   rounds.setLoading();
   demand.setLoading();
 
+  // The tab bar is wired before the first request, so a deep link like
+  // `#basket` opens on the right panel rather than flipping to it once the data
+  // lands. Every panel is loaded either way — see `applyVisibility`.
+  tabs.start();
+  applyVisibility();
+
   // Config first — it settles the mode pill, the rules prose and the countdown
-  // target — but it does not block the other five, which each own their state.
+  // target — but it does not block the other three, which each own their state.
   const configPromise = loadConfig({ toastOnError: true }).catch(() => null);
 
   const results = await Promise.allSettled([
     configPromise,
     loadUniverse(),
     loadStats(),
-    loadVault(),
     loadRounds(),
   ]);
 
@@ -960,6 +954,7 @@ window.STOCKDROP = Object.assign(window.STOCKDROP || {}, {
     state,
     reload: refreshAll,
     api,
-    panels: { tape, stocks, basket, vault, rounds, demand },
+    tabs,
+    panels: { tape, stocks, basket, round, holders, rounds, demand },
   },
 });

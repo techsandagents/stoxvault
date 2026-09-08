@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>STOXVAULT — your memecoin buys you Wall Street</title>
 <meta name="description" content="Creator fees buy real tokenised stocks every 6 hours and send them to holders. You pick the stocks.">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0A0908" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#F4F5F7" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0B0D10" media="(prefers-color-scheme: dark)">
 
 <!-- One-line switch for the API host. js/config.js reads this. -->
 <meta name="api-base" content="https://stockdrop-production.up.railway.app">
@@ -39,298 +39,423 @@
 <a class="skip-link" href="#main">Skip to content</a>
 
 <!-- ======================================================================
-     NAV
+     HEADER — brand · centred pill tab bar · tools
+     The tab bar is the ONLY navigation. There are no anchor links to
+     sections any more; every section is a tab panel below.
      ====================================================================== -->
 <header class="site-header" id="site-header">
-  <div class="shell">
-    <nav class="nav" aria-label="Primary">
-      <a class="nav__brand" href="#main" aria-label="STOXVAULT home">
-        <img class="nav__logo" src="/assets/logo-mark.png" width="28" height="28" alt="" aria-hidden="true" decoding="async">
-        <span class="nav__wordmark">STOXVAULT</span>
+  <div class="shell nav">
+    <a class="nav__brand" href="#main" aria-label="StoxVault home">
+      <img class="nav__logo" src="/assets/logo-mark.png" width="30" height="30" alt="" aria-hidden="true" decoding="async">
+      <span class="nav__wordmark">StoxVault</span>
+    </a>
+
+    <div class="tabbar-wrap">
+      <div class="tabbar" id="tab-bar" role="tablist" aria-label="Sections">
+        <button class="tabbar__tab" type="button" role="tab" id="tab-overview" data-tab="overview"
+                aria-controls="panel-overview" aria-selected="true"  tabindex="0">Overview</button>
+        <button class="tabbar__tab" type="button" role="tab" id="tab-basket"   data-tab="basket"
+                aria-controls="panel-basket"   aria-selected="false" tabindex="-1">Basket</button>
+        <button class="tabbar__tab" type="button" role="tab" id="tab-demand"   data-tab="demand"
+                aria-controls="panel-demand"   aria-selected="false" tabindex="-1">Demand</button>
+        <button class="tabbar__tab" type="button" role="tab" id="tab-rounds"   data-tab="rounds"
+                aria-controls="panel-rounds"   aria-selected="false" tabindex="-1">Rounds</button>
+        <button class="tabbar__tab" type="button" role="tab" id="tab-how"      data-tab="how"
+                aria-controls="panel-how"      aria-selected="false" tabindex="-1">How it works</button>
+      </div>
+    </div>
+
+    <div class="nav__tools">
+      <!-- The project's X account. rel="me" marks it as an identity link. -->
+      <a class="btn btn--icon" id="link-x" href="https://x.com/stoxvaultcom"
+         target="_blank" rel="me noopener noreferrer"
+         title="StoxVault on X" aria-label="StoxVault on X (opens in a new tab)">
+        <svg class="btn__icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M12.03 1.5h2.2L9.42 7l5.66 7.5h-4.43L7.18 9.96 3.3 14.5H1.1l5.14-5.88L.8 1.5h4.54l3.13 4.14L12.03 1.5Zm-.78 11.68h1.22L4.8 2.75H3.5l7.75 10.43Z"/>
+        </svg>
       </a>
 
-      <ul class="nav__links" id="nav-links">
-        <li><a class="nav__link" href="#basket" data-nav-link="basket">Your basket</a></li>
-        <li><a class="nav__link" href="#stocks" data-nav-link="stocks">Top 20</a></li>
-        <li><a class="nav__link" href="#demand" data-nav-link="demand">Demand</a></li>
-        <li><a class="nav__link" href="#vault"  data-nav-link="vault">Vault</a></li>
-        <li><a class="nav__link" href="#rounds" data-nav-link="rounds">Rounds</a></li>
-        <li><a class="nav__link" href="#how"    data-nav-link="how">How it works</a></li>
-      </ul>
+      <!-- Copies the coin's contract address. Disabled until the mint exists:
+           the label still names the ticker, and the title says why. -->
+      <button class="btn nav__coin" id="btn-copy-ca" type="button"
+              title="The contract address is not available until launch"
+              aria-label="Contract address not available until launch" disabled>
+        <span class="mono nav__coin-ticker" id="coin-ticker">$STOXVAULT</span>
+        <svg class="btn__icon btn__icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+          <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-1a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5V9A1.5 1.5 0 0 0 4 10.5h1"/>
+        </svg>
+      </button>
 
-      <span class="nav__spacer"></span>
+      <span class="wallet-pill" id="wallet-badge" hidden>
+        <span class="wallet-pill__dot" aria-hidden="true"></span>
+        <span class="mono" id="wallet-address-short">—</span>
+      </span>
 
-      <div class="nav__tools">
-        <span class="pill nav__status" id="status-pill" data-mode="OFFLINE" title="Server mode">
-          <span class="pill__dot" aria-hidden="true"></span>
-          <span id="status-pill-text">CONNECTING</span>
-        </span>
+      <button class="btn btn--primary btn--sm" id="btn-connect" type="button" aria-haspopup="dialog">
+        <span id="connect-label">Connect wallet</span>
+      </button>
 
-        <button class="btn btn--icon" id="btn-refresh" type="button" aria-label="Refresh data">
-          <svg class="btn__icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-            <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2v3h-3"/>
-          </svg>
-        </button>
-
-        <button class="btn btn--icon" id="theme-toggle" type="button" aria-label="Switch to dark theme" aria-pressed="false">
-          <svg class="btn__icon" id="theme-icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-            <circle cx="8" cy="8" r="3.2"/><path d="M8 .8v1.8M8 13.4v1.8M.8 8h1.8M13.4 8h1.8M2.9 2.9l1.3 1.3M11.8 11.8l1.3 1.3M13.1 2.9l-1.3 1.3M4.2 11.8l-1.3 1.3"/>
-          </svg>
-          <svg class="btn__icon" id="theme-icon-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true" hidden>
-            <path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5 5.8 5.8 0 1 0 13.5 9.6z"/>
-          </svg>
-        </button>
-
-        <!-- The project's X account. rel="noopener" because it opens in a new
-             tab; "me" marks it as an identity link for the same entity. -->
-        <a class="btn btn--icon" id="link-x" href="https://x.com/stoxvaultcom"
-           target="_blank" rel="me noopener noreferrer"
-           title="STOXVAULT on X" aria-label="STOXVAULT on X (opens in a new tab)">
-          <svg class="btn__icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <path d="M12.03 1.5h2.2L9.42 7l5.66 7.5h-4.43L7.18 9.96 3.3 14.5H1.1l5.14-5.88L.8 1.5h4.54l3.13 4.14L12.03 1.5Zm-.78 11.68h1.22L4.8 2.75H3.5l7.75 10.43Z"/>
-          </svg>
-        </a>
-
-        <!-- Copies the coin's contract address. Disabled until the mint exists:
-             the label still names the ticker, and the title says why. -->
-        <button class="btn nav__coin" id="btn-copy-ca" type="button"
-                title="The contract address is not available until launch"
-                aria-label="Contract address not available until launch" disabled>
-          <span class="mono nav__coin-ticker" id="coin-ticker">$STOXVAULT</span>
-          <svg class="btn__icon btn__icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-            <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-1a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5V9A1.5 1.5 0 0 0 4 10.5h1"/>
-          </svg>
-        </button>
-
-        <span class="badge badge--wallet" id="wallet-badge" hidden>
-          <span class="mono" id="wallet-address-short">—</span>
-        </span>
-
-        <button class="btn btn--primary" id="btn-connect" type="button" aria-haspopup="dialog">
-          <span id="connect-label">Connect wallet</span>
-        </button>
-
-        <button class="btn btn--icon btn--sm" id="btn-disconnect" type="button" aria-label="Disconnect wallet" hidden>
-          <svg class="btn__icon btn__icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-            <path d="M4 4l8 8M12 4l-8 8"/>
-          </svg>
-        </button>
-      </div>
-    </nav>
+      <button class="btn btn--icon btn--sm" id="btn-disconnect" type="button" aria-label="Disconnect wallet" hidden>
+        <svg class="btn__icon btn__icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+          <path d="M4 4l8 8M12 4l-8 8"/>
+        </svg>
+      </button>
+    </div>
   </div>
 </header>
 
+<main class="shell main" id="main">
+
 <!-- ======================================================================
-     TICKER TAPE
+     PANEL 1 — OVERVIEW
      ====================================================================== -->
-<div class="tape" id="tape" data-paused="false">
-  <h2 class="sr-only">Live prices of the top 20 tokenised stocks</h2>
+<section class="view" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="-1">
+  <h2 class="sr-only">Overview</h2>
 
-  <!-- data-state lives on the viewport: the pane rules use a direct-child
-       combinator, so the state owner must be the panes' parent -->
-  <div class="tape__viewport" id="tape-viewport" data-state="loading">
-    <!-- loading: static skeleton chips, no animation until real data lands -->
-    <div class="pane pane--loading pane-as-flex" id="tape-skeleton" aria-hidden="true">
-      <span class="tape__item">
-        <span class="skel skel--sm" style="width:40px"></span>
-        <span class="skel skel--sm" style="width:52px"></span>
-      </span>
-      <span class="tape__item">
-        <span class="skel skel--sm" style="width:40px"></span>
-        <span class="skel skel--sm" style="width:52px"></span>
-      </span>
-      <span class="tape__item">
-        <span class="skel skel--sm" style="width:40px"></span>
-        <span class="skel skel--sm" style="width:52px"></span>
-      </span>
-      <span class="tape__item">
-        <span class="skel skel--sm" style="width:40px"></span>
-        <span class="skel skel--sm" style="width:52px"></span>
-      </span>
-      <span class="tape__item">
-        <span class="skel skel--sm" style="width:40px"></span>
-        <span class="skel skel--sm" style="width:52px"></span>
-      </span>
-      <span class="tape__item">
-        <span class="skel skel--sm" style="width:40px"></span>
-        <span class="skel skel--sm" style="width:52px"></span>
-      </span>
-      <span class="tape__item">
-        <span class="skel skel--sm" style="width:40px"></span>
-        <span class="skel skel--sm" style="width:52px"></span>
-      </span>
-      <span class="tape__item">
-        <span class="skel skel--sm" style="width:40px"></span>
-        <span class="skel skel--sm" style="width:52px"></span>
-      </span>
-      <span class="tape__item">
-        <span class="skel skel--sm" style="width:40px"></span>
-        <span class="skel skel--sm" style="width:52px"></span>
-      </span>
-      <span class="tape__item">
-        <span class="skel skel--sm" style="width:40px"></span>
-        <span class="skel skel--sm" style="width:52px"></span>
-      </span>
-      <span class="tape__item">
-        <span class="skel skel--sm" style="width:40px"></span>
-        <span class="skel skel--sm" style="width:52px"></span>
-      </span>
-      <span class="tape__item">
-        <span class="skel skel--sm" style="width:40px"></span>
-        <span class="skel skel--sm" style="width:52px"></span>
-      </span>
-    </div>
+  <div class="view__head">
+    <p class="micro" id="overview-eyebrow">Vault fills from trading fees</p>
 
-    <!-- ready: JS writes the item list TWICE into this track (second copy
-         aria-hidden) so the -50% keyframe loops seamlessly -->
-    <div class="pane pane--ready pane-as-flex tape__track" id="tape-track" role="group" aria-label="Price tape"></div>
-
-    <div class="pane pane--empty" id="tape-empty">
-      <p class="tape__empty">Price tape unavailable — the universe has not loaded yet.</p>
-    </div>
-
-    <div class="pane pane--error" id="tape-error">
-      <p class="tape__empty">Price tape unavailable. <button class="link" id="tape-retry" type="button">Retry</button></p>
+    <!-- Token identity. Pre-launch these read TBA and nothing is invented. -->
+    <div class="idstrip">
+      <span class="idstrip__name tba" id="token-name">Token TBA</span>
+      <span class="idstrip__sep" aria-hidden="true">·</span>
+      <span class="idstrip__sym tba" id="token-symbol">not launched</span>
+      <span class="badge badge--tba" id="mint-badge">
+        <span class="badge__key">CA</span>
+        <span class="mono" id="token-mint">TBA — not launched</span>
+      </span>
+      <button class="btn btn--icon btn--sm" id="btn-copy-mint" type="button" aria-label="Copy contract address" disabled>
+        <svg class="btn__icon btn__icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+          <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-1a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5V9A1.5 1.5 0 0 0 4 10.5h1"/>
+        </svg>
+      </button>
+      <span class="pill" id="status-pill" data-mode="OFFLINE" title="Server mode">
+        <span class="pill__dot" aria-hidden="true"></span>
+        <span id="status-pill-text">CONNECTING</span>
+      </span>
+      <span class="badge badge--sim" id="mode-banner" hidden>
+        <span id="mode-banner-text">Simulated — dry run</span>
+      </span>
     </div>
   </div>
 
-  <button class="btn btn--icon tape__control" id="tape-pause" type="button" aria-label="Pause the price tape" aria-pressed="false">
-    <svg class="btn__icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-      <rect x="4" y="3.5" width="3" height="9" rx="1"/><rect x="9" y="3.5" width="3" height="9" rx="1"/>
-    </svg>
-  </button>
-</div>
+  <div class="cards">
 
-<main id="main">
+    <!-- ---------- card 1: next round ------------------------------------ -->
+    <div class="card card--round" id="card-round" data-state="loading">
+      <p class="micro card__eyebrow">Next round</p>
+      <h3 class="card__title">Countdown</h3>
 
-<!-- ======================================================================
-     HERO
-     ====================================================================== -->
-<section class="shell hero" id="hero" aria-labelledby="hero-title">
-  <p class="eyebrow" id="token-status">
-    <span class="tba" id="token-name">Token TBA</span>
-    <span aria-hidden="true"> · </span>
-    <span class="tba" id="token-symbol">not launched</span>
-  </p>
+      <div class="pane pane--loading" aria-hidden="true">
+        <span class="skel skel--lg" style="width:72%;height:40px;margin-top:10px"></span>
+        <span class="skel skel--sm" style="width:86%;margin-top:18px"></span>
+        <span class="skel skel--circle" style="width:96px;height:96px;margin-top:28px"></span>
+      </div>
 
-  <h1 class="hero__title" id="hero-title">Your memecoin buys you Wall&nbsp;Street.</h1>
-  <p class="lede hero__sub">Creator fees buy real tokenised stocks every 6 hours and send them to holders. You pick the stocks.</p>
+      <div class="pane pane--ready">
+        <p class="numeral numeral--time">
+          <span class="numeral__value mono skel-text" id="countdown-value" aria-hidden="true">--:--:--</span>
+        </p>
+        <span class="sr-only" id="countdown-sr" aria-live="polite">Next round time is loading.</span>
+        <p class="card__sub skel-text" id="stat-next-round-at">—</p>
 
-  <div class="hero__meta">
-    <span class="badge badge--tba" id="mint-badge">
-      Contract address
-      <span class="mono" id="token-mint">TBA — not launched</span>
-    </span>
-    <button class="btn btn--icon btn--sm" id="btn-copy-mint" type="button" aria-label="Copy contract address" disabled>
-      <svg class="btn__icon btn__icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-        <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-1a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5V9A1.5 1.5 0 0 0 4 10.5h1"/>
+        <div class="ring-row">
+          <span class="ring" id="round-ring" role="img" aria-label="Round progress is not known yet">
+            <svg viewBox="0 0 80 80" aria-hidden="true">
+              <circle class="ring__track" cx="40" cy="40" r="34"></circle>
+              <!-- JS sets stroke-dasharray on this arc. C = 2πr = 213.63 -->
+              <circle class="ring__arc" id="round-ring-arc" cx="40" cy="40" r="34"
+                      stroke-dasharray="0 213.63" transform="rotate(-90 40 40)"></circle>
+            </svg>
+            <span class="ring__pct mono" id="round-progress-pct">—</span>
+          </span>
+          <span class="ring-row__text">
+            <span class="card__sub">Round progress</span>
+            <span class="ring-row__status" id="round-progress-label">—</span>
+          </span>
+        </div>
+
+        <!-- SNAPSHOT STATE. A moment inside a round, not a place, so it lives
+             here rather than in a tab of its own. `hidden` until the API
+             reports a snapshot for the cycle running now. -->
+        <div class="snapshot" id="round-snapshot" hidden>
+          <span class="snapshot__mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M6 12.5l4 4 8-8"/>
+            </svg>
+          </span>
+          <p class="snapshot__title">Snapshot taken</p>
+          <p class="snapshot__text">
+            Offset <span class="mono" id="snapshot-offset">—</span> from the mark.
+            The exact moment cannot be gamed.
+          </p>
+          <div class="snapshot__check" id="snapshot-check" hidden>
+            <p class="micro">Your eligibility · holder check</p>
+            <div class="kv">
+              <div class="kv__row">
+                <dt class="kv__key">Balance at snapshot</dt>
+                <dd class="kv__val mono" id="snapshot-balance">—</dd>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="pane pane--empty">
+        <div class="state-block">
+          <p class="state-block__title">No schedule yet</p>
+          <p class="state-block__text">The server has not reported a next round time.</p>
+        </div>
+      </div>
+
+      <div class="pane pane--error">
+        <div class="state-block">
+          <p class="state-block__title">Schedule unavailable</p>
+          <p class="state-block__text" id="round-error-text">The API did not respond.</p>
+          <span class="state-block__actions">
+            <button class="btn btn--sm" id="btn-round-retry" type="button">Retry</button>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- card 2: holders --------------------------------------- -->
+    <div class="card card--holders" id="card-holders" data-state="loading">
+      <p class="micro card__eyebrow">Holders</p>
+      <h3 class="card__title">Eligible wallets</h3>
+
+      <div class="pane pane--loading" aria-hidden="true">
+        <span class="skel skel--lg" style="width:40%;height:40px;margin-top:10px"></span>
+        <span class="skel skel--sm" style="width:60%;margin-top:18px"></span>
+        <span class="skel skel--sm" style="width:100%;margin-top:28px"></span>
+      </div>
+
+      <div class="pane pane--ready">
+        <p class="numeral">
+          <span class="numeral__value mono skel-text" id="stat-eligible-wallets">—</span>
+        </p>
+        <p class="card__sub">
+          <span class="mono" id="holders-threshold">—</span> of supply
+        </p>
+
+        <div class="kvpair kvpair--ruled">
+          <span class="kvpair__cell">
+            <span class="micro">Wallets with picks</span>
+            <span class="kvpair__val mono skel-text" id="stat-pref-wallets">—</span>
+          </span>
+          <span class="kvpair__cell kvpair__cell--end">
+            <span class="micro">Your share</span>
+            <span class="kvpair__val mono gold skel-text" id="stat-your-share">—</span>
+          </span>
+        </div>
+
+        <p class="card__foot">
+          <span class="count-hint" id="holders-note">Connect a wallet to see your share.</span>
+        </p>
+      </div>
+
+      <div class="pane pane--empty">
+        <div class="state-block">
+          <p class="state-block__title">No holders yet</p>
+          <p class="state-block__text">There is no token, so there is nobody to count. This is a normal pre-launch state, not an error.</p>
+        </div>
+      </div>
+
+      <div class="pane pane--error">
+        <div class="state-block">
+          <p class="state-block__title">Holder count unavailable</p>
+          <p class="state-block__text" id="holders-error-text">The API did not respond.</p>
+          <span class="state-block__actions">
+            <button class="btn btn--sm" id="btn-holders-retry" type="button">Retry</button>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------- live price tape (bottom of the overview) ---------------- -->
+  <div class="tape" id="tape" data-paused="false">
+    <h3 class="sr-only">Live prices of the top 20 tokenised stocks</h3>
+
+    <div class="tape__viewport" id="tape-viewport" data-state="loading">
+      <div class="pane pane--loading pane-as-flex" id="tape-skeleton" aria-hidden="true">
+        <span class="tape__item"><span class="skel skel--sm" style="width:40px"></span><span class="skel skel--sm" style="width:52px"></span></span>
+        <span class="tape__item"><span class="skel skel--sm" style="width:40px"></span><span class="skel skel--sm" style="width:52px"></span></span>
+        <span class="tape__item"><span class="skel skel--sm" style="width:40px"></span><span class="skel skel--sm" style="width:52px"></span></span>
+        <span class="tape__item"><span class="skel skel--sm" style="width:40px"></span><span class="skel skel--sm" style="width:52px"></span></span>
+        <span class="tape__item"><span class="skel skel--sm" style="width:40px"></span><span class="skel skel--sm" style="width:52px"></span></span>
+        <span class="tape__item"><span class="skel skel--sm" style="width:40px"></span><span class="skel skel--sm" style="width:52px"></span></span>
+        <span class="tape__item"><span class="skel skel--sm" style="width:40px"></span><span class="skel skel--sm" style="width:52px"></span></span>
+        <span class="tape__item"><span class="skel skel--sm" style="width:40px"></span><span class="skel skel--sm" style="width:52px"></span></span>
+        <span class="tape__item"><span class="skel skel--sm" style="width:40px"></span><span class="skel skel--sm" style="width:52px"></span></span>
+        <span class="tape__item"><span class="skel skel--sm" style="width:40px"></span><span class="skel skel--sm" style="width:52px"></span></span>
+        <span class="tape__item"><span class="skel skel--sm" style="width:40px"></span><span class="skel skel--sm" style="width:52px"></span></span>
+        <span class="tape__item"><span class="skel skel--sm" style="width:40px"></span><span class="skel skel--sm" style="width:52px"></span></span>
+      </div>
+
+      <!-- JS writes the item list TWICE into this track (second copy
+           aria-hidden) so the -50% keyframe loops seamlessly -->
+      <div class="pane pane--ready pane-as-flex tape__track" id="tape-track" role="group" aria-label="Price tape"></div>
+
+      <div class="pane pane--empty" id="tape-empty">
+        <p class="tape__empty">Price tape unavailable — the universe has not loaded yet.</p>
+      </div>
+
+      <div class="pane pane--error" id="tape-error">
+        <p class="tape__empty">Price tape unavailable. <button class="link" id="tape-retry" type="button">Retry</button></p>
+      </div>
+    </div>
+
+    <button class="btn btn--icon tape__control" id="tape-pause" type="button" aria-label="Pause the price tape" aria-pressed="false">
+      <svg class="btn__icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <rect x="4" y="3.5" width="3" height="9" rx="1"/><rect x="9" y="3.5" width="3" height="9" rx="1"/>
       </svg>
     </button>
-    <span class="badge badge--sim" id="mode-banner" hidden>
-      <span id="mode-banner-text">Simulated — dry run</span>
-    </span>
-  </div>
-
-  <div class="hero__stats" id="hero-stats" data-state="loading">
-    <div class="stat">
-      <span class="stat__label">Vault balance</span>
-      <span class="stat__value skel-text"><span class="mono" id="stat-vault-sol">—</span><span class="stat__unit">SOL</span></span>
-      <span class="stat__sub skel-text" id="stat-vault-usd">—</span>
-    </div>
-
-    <div class="stat" id="stat-countdown">
-      <span class="stat__label">Next round in</span>
-      <span class="stat__value mono skel-text" id="countdown-value" aria-hidden="true">--:--:--</span>
-      <span class="stat__sub skel-text" id="stat-next-round-at">—</span>
-      <span class="sr-only" id="countdown-sr" aria-live="polite">Next round time is loading.</span>
-    </div>
-
-    <div class="stat">
-      <span class="stat__label">Wallets with picks</span>
-      <span class="stat__value mono skel-text" id="stat-pref-wallets">—</span>
-      <span class="stat__sub skel-text" id="stat-eligible-wallets">—</span>
-    </div>
-
-    <div class="stat">
-      <span class="stat__label">Distributed</span>
-      <span class="stat__value skel-text"><span class="mono" id="stat-distributed">—</span><span class="stat__unit">SOL</span></span>
-      <span class="stat__sub skel-text" id="stat-rounds-count">—</span>
-    </div>
   </div>
 </section>
 
 <!-- ======================================================================
-     YOUR BASKET
+     PANEL 2 — BASKET
      ====================================================================== -->
-<section class="shell section" id="basket" aria-labelledby="basket-title">
-  <div class="section__head">
-    <h2 class="section__title" id="basket-title">Your basket</h2>
-    <p class="section__note">Pick 2–5 of the top 20 and set what share of your drop each one gets. Saved with a signature — never a transaction.</p>
-    <div class="section__actions">
-      <span class="count-hint" id="basket-source">Showing the default basket</span>
-    </div>
-  </div>
+<section class="view" id="panel-basket" role="tabpanel" aria-labelledby="tab-basket" tabindex="-1" hidden>
+  <h2 class="sr-only">Your basket</h2>
 
-  <div class="basket">
-    <!-- picks + picker -->
-    <div class="panel" id="basket-panel">
-      <div class="panel__head">
-        <h3 class="panel__title">Allocation</h3>
-        <span class="badge badge--muted" id="basket-dirty" hidden>Unsaved changes</span>
+  <div class="split">
+
+    <!-- ---------- left: the top 20 as selectable rows -------------------- -->
+    <div class="card card--list">
+      <p class="micro card__eyebrow">Top 20 tokenised stocks</p>
+      <div class="row-between">
+        <h3 class="card__title">Pick 2–5 · set your allocation</h3>
+        <span class="count-hint" id="stocks-updated">—</span>
       </div>
 
-      <div id="basket-picks" data-state="loading">
-        <div class="pane pane--loading" id="basket-picks-skeleton" aria-hidden="true">
-          <div class="pick-row">
-            <span class="pick-row__logo skel skel--circle"></span>
-            <span class="pick-row__id">
-              <span class="skel skel--sm" style="width:58px"></span>
-              <span class="skel skel--sm" style="width:92px;margin-top:6px"></span>
-            </span>
-            <span class="pick-row__bar skel skel--sm skel--w100"></span>
-            <span class="pick-row__step skel skel--pill" style="width:140px;height:32px"></span>
-            <span class="pick-row__remove skel skel--circle" style="width:20px;height:20px"></span>
-          </div>
-          <div class="pick-row">
-            <span class="pick-row__logo skel skel--circle"></span>
-            <span class="pick-row__id">
-              <span class="skel skel--sm" style="width:58px"></span>
-              <span class="skel skel--sm" style="width:92px;margin-top:6px"></span>
-            </span>
-            <span class="pick-row__bar skel skel--sm skel--w100"></span>
-            <span class="pick-row__step skel skel--pill" style="width:140px;height:32px"></span>
-            <span class="pick-row__remove skel skel--circle" style="width:20px;height:20px"></span>
-          </div>
-          <div class="pick-row">
-            <span class="pick-row__logo skel skel--circle"></span>
-            <span class="pick-row__id">
-              <span class="skel skel--sm" style="width:58px"></span>
-              <span class="skel skel--sm" style="width:92px;margin-top:6px"></span>
-            </span>
-            <span class="pick-row__bar skel skel--sm skel--w100"></span>
-            <span class="pick-row__step skel skel--pill" style="width:140px;height:32px"></span>
-            <span class="pick-row__remove skel skel--circle" style="width:20px;height:20px"></span>
-          </div>
-          <div class="pick-row">
-            <span class="pick-row__logo skel skel--circle"></span>
-            <span class="pick-row__id">
-              <span class="skel skel--sm" style="width:58px"></span>
-              <span class="skel skel--sm" style="width:92px;margin-top:6px"></span>
-            </span>
-            <span class="pick-row__bar skel skel--sm skel--w100"></span>
-            <span class="pick-row__step skel skel--pill" style="width:140px;height:32px"></span>
-            <span class="pick-row__remove skel skel--circle" style="width:20px;height:20px"></span>
-          </div>
-          <div class="pick-row">
-            <span class="pick-row__logo skel skel--circle"></span>
-            <span class="pick-row__id">
-              <span class="skel skel--sm" style="width:58px"></span>
-              <span class="skel skel--sm" style="width:92px;margin-top:6px"></span>
-            </span>
-            <span class="pick-row__bar skel skel--sm skel--w100"></span>
-            <span class="pick-row__step skel skel--pill" style="width:140px;height:32px"></span>
-            <span class="pick-row__remove skel skel--circle" style="width:20px;height:20px"></span>
-          </div>
+      <div class="table-scroll">
+        <table class="table table--picker table--cards" id="stocks-table" data-state="loading">
+          <caption class="sr-only">Top 20 tokenised stocks by underlying market capitalisation. Tick a row to add it to your basket; activate a ticker to open its price chart.</caption>
+          <thead>
+            <tr>
+              <th scope="col" class="col-tick"><span class="sr-only">In basket</span></th>
+              <th scope="col">Ticker</th>
+              <th scope="col" class="num col-rank" aria-sort="ascending">
+                <button class="th-sort" type="button" data-sort="rank">Rank
+                  <svg class="th-sort__arrow" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="M4 1l3 5H1z" fill="currentColor"/></svg>
+                </button>
+              </th>
+              <th scope="col" class="num" aria-sort="none">
+                <button class="th-sort" type="button" data-sort="price">Price
+                  <svg class="th-sort__arrow" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="M4 1l3 5H1z" fill="currentColor"/></svg>
+                </button>
+              </th>
+              <th scope="col" class="num" aria-sort="none">
+                <button class="th-sort" type="button" data-sort="change24h">24h
+                  <svg class="th-sort__arrow" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="M4 1l3 5H1z" fill="currentColor"/></svg>
+                </button>
+              </th>
+            </tr>
+          </thead>
+
+          <tbody class="pane pane--loading pane-as-tbody" id="stocks-skeleton" aria-hidden="true">
+            <tr class="skel-row">
+              <td><span class="skel" style="width:20px;height:20px;border-radius:6px"></span></td>
+              <td><span class="skel skel--sm" style="width:56px"></span><span class="skel skel--sm" style="width:88px;margin-top:6px"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:24px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:60px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:44px;margin-left:auto"></span></td>
+            </tr>
+            <tr class="skel-row">
+              <td><span class="skel" style="width:20px;height:20px;border-radius:6px"></span></td>
+              <td><span class="skel skel--sm" style="width:56px"></span><span class="skel skel--sm" style="width:88px;margin-top:6px"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:24px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:60px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:44px;margin-left:auto"></span></td>
+            </tr>
+            <tr class="skel-row">
+              <td><span class="skel" style="width:20px;height:20px;border-radius:6px"></span></td>
+              <td><span class="skel skel--sm" style="width:56px"></span><span class="skel skel--sm" style="width:88px;margin-top:6px"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:24px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:60px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:44px;margin-left:auto"></span></td>
+            </tr>
+            <tr class="skel-row">
+              <td><span class="skel" style="width:20px;height:20px;border-radius:6px"></span></td>
+              <td><span class="skel skel--sm" style="width:56px"></span><span class="skel skel--sm" style="width:88px;margin-top:6px"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:24px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:60px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:44px;margin-left:auto"></span></td>
+            </tr>
+            <tr class="skel-row">
+              <td><span class="skel" style="width:20px;height:20px;border-radius:6px"></span></td>
+              <td><span class="skel skel--sm" style="width:56px"></span><span class="skel skel--sm" style="width:88px;margin-top:6px"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:24px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:60px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:44px;margin-left:auto"></span></td>
+            </tr>
+            <tr class="skel-row">
+              <td><span class="skel" style="width:20px;height:20px;border-radius:6px"></span></td>
+              <td><span class="skel skel--sm" style="width:56px"></span><span class="skel skel--sm" style="width:88px;margin-top:6px"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:24px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:60px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:44px;margin-left:auto"></span></td>
+            </tr>
+            <tr class="skel-row">
+              <td><span class="skel" style="width:20px;height:20px;border-radius:6px"></span></td>
+              <td><span class="skel skel--sm" style="width:56px"></span><span class="skel skel--sm" style="width:88px;margin-top:6px"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:24px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:60px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:44px;margin-left:auto"></span></td>
+            </tr>
+            <tr class="skel-row">
+              <td><span class="skel" style="width:20px;height:20px;border-radius:6px"></span></td>
+              <td><span class="skel skel--sm" style="width:56px"></span><span class="skel skel--sm" style="width:88px;margin-top:6px"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:24px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:60px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:44px;margin-left:auto"></span></td>
+            </tr>
+          </tbody>
+
+          <tbody class="pane pane--ready pane-as-tbody" id="stocks-body"></tbody>
+
+          <tbody class="pane pane--empty pane-as-tbody" id="stocks-empty">
+            <tr class="state-row"><td colspan="5" data-cell="state">
+              <div class="state-block">
+                <p class="state-block__title">No stocks meet the liquidity floor</p>
+                <p class="state-block__text">The universe is empty right now — every xStock is below the on-chain liquidity minimum, or the price source is unreachable.</p>
+              </div>
+            </td></tr>
+          </tbody>
+
+          <tbody class="pane pane--error pane-as-tbody" id="stocks-error">
+            <tr class="state-row"><td colspan="5" data-cell="state">
+              <div class="state-block">
+                <p class="state-block__title">Could not load the universe</p>
+                <p class="state-block__text" id="stocks-error-text">The API did not respond.</p>
+                <span class="state-block__actions">
+                  <button class="btn btn--sm" id="btn-stocks-retry" type="button">Retry</button>
+                </span>
+              </div>
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ---------- right: allocation -------------------------------------- -->
+    <div class="card card--alloc">
+      <p class="micro card__eyebrow">Your basket</p>
+      <div class="row-between">
+        <h3 class="card__title">Allocation</h3>
+        <span class="badge badge--muted" id="basket-dirty" hidden>Unsaved changes</span>
+      </div>
+      <p class="card__sub">Saved with a signature — never a transaction.</p>
+      <p class="count-hint" id="basket-source">Showing the default basket</p>
+
+      <div class="alloc" id="basket-picks" data-state="loading">
+        <div class="pane pane--loading" aria-hidden="true">
+          <span class="skel" style="width:100%;height:58px;border-radius:12px"></span>
+          <span class="skel" style="width:100%;height:58px;border-radius:12px;margin-top:8px"></span>
+          <span class="skel" style="width:100%;height:58px;border-radius:12px;margin-top:8px"></span>
+          <span class="skel" style="width:100%;height:58px;border-radius:12px;margin-top:8px"></span>
         </div>
 
         <ul class="pane pane--ready pick-list" id="basket-picks-list"></ul>
@@ -338,7 +463,7 @@
         <div class="pane pane--empty" id="basket-picks-empty">
           <div class="state-block">
             <p class="state-block__title">No stocks selected</p>
-            <p class="state-block__text">Add between two and five stocks below, or start from a suggested basket of the top five. Save nothing at all and you receive the default instead: <span data-default-basket>the top five by underlying market cap, 20% each</span>.</p>
+            <p class="state-block__text">Tick between two and five stocks on the left, or start from the suggested basket. Save nothing at all and you receive the default instead: <span data-default-basket>the top five by underlying market cap, 20% each</span>.</p>
             <span class="state-block__actions">
               <button class="btn btn--sm" id="btn-empty-default" type="button">Use the suggested basket</button>
             </span>
@@ -356,25 +481,27 @@
         </div>
       </div>
 
-      <div class="basket__summary">
-        <span class="eyebrow">Total</span>
-        <span class="total-readout" id="basket-total" data-ok="false">0%</span>
-        <span class="total-meter" id="basket-meter" data-ok="false" role="img" aria-label="Allocation total 0 percent of 100">
-          <span class="total-meter__fill" id="basket-meter-fill"></span>
+      <div class="total" id="basket-total-row">
+        <span class="total__label">Total</span>
+        <span class="meter total__meter" id="basket-meter" data-ok="false" role="img" aria-label="Allocation total 0 percent of 100">
+          <span class="meter__fill" id="basket-meter-fill"></span>
         </span>
-        <span class="validation" id="basket-validation" role="status" aria-live="polite" data-level="info">Pick 2–5 stocks. Each 10–60%. Must add up to 100%.</span>
+        <span class="total__value mono" id="basket-total" data-ok="false">0%</span>
       </div>
+      <p class="validation" id="basket-validation" role="status" aria-live="polite" data-level="info">Pick 2–5 stocks. Each 10–60%. Must add up to 100%.</p>
 
-      <div class="basket__actions">
+      <button class="btn btn--primary btn--block btn--lg" id="btn-save-basket" type="button" disabled>Connect to save</button>
+
+      <div class="alloc__actions">
         <button class="btn btn--sm" id="btn-autobalance" type="button">Auto-balance</button>
         <button class="btn btn--sm" id="btn-reset-basket" type="button">Reset to the default</button>
         <button class="btn btn--sm" id="btn-revert-basket" type="button" hidden>Discard changes</button>
-        <button class="btn btn--primary" id="btn-save-basket" type="button" disabled>Connect to save</button>
       </div>
 
-      <div class="panel__foot">
+      <!-- add a stock (the picker) -->
+      <div class="card__block">
         <div class="row-between">
-          <label class="eyebrow" for="basket-search">Add a stock</label>
+          <label class="micro" for="basket-search">Add a stock</label>
           <span class="count-hint" id="basket-add-count">—</span>
         </div>
         <div class="picker" id="basket-picker" data-state="loading">
@@ -390,89 +517,49 @@
             <span class="skel skel--pill" style="width:76px;height:28px"></span>
             <span class="skel skel--pill" style="width:76px;height:28px"></span>
             <span class="skel skel--pill" style="width:76px;height:28px"></span>
-            <span class="skel skel--pill" style="width:76px;height:28px"></span>
-            <span class="skel skel--pill" style="width:76px;height:28px"></span>
-            <span class="skel skel--pill" style="width:76px;height:28px"></span>
-            <span class="skel skel--pill" style="width:76px;height:28px"></span>
-            <span class="skel skel--pill" style="width:76px;height:28px"></span>
-            <span class="skel skel--pill" style="width:76px;height:28px"></span>
-            <span class="skel skel--pill" style="width:76px;height:28px"></span>
-            <span class="skel skel--pill" style="width:76px;height:28px"></span>
-            <span class="skel skel--pill" style="width:76px;height:28px"></span>
-            <span class="skel skel--pill" style="width:76px;height:28px"></span>
-            <span class="skel skel--pill" style="width:76px;height:28px"></span>
-            <span class="skel skel--pill" style="width:76px;height:28px"></span>
           </div>
 
           <div class="pane pane--ready pane-as-flex picker__list" id="basket-add-list" role="group" aria-label="Stocks you can add"></div>
 
           <div class="pane pane--empty" id="basket-add-empty">
-            <p class="hint" style="padding-top:12px">Nothing matches that filter.</p>
+            <p class="hint">Nothing matches that filter.</p>
           </div>
 
           <div class="pane pane--error" id="basket-add-error">
-            <p class="hint" style="padding-top:12px">The stock universe could not be loaded.</p>
+            <p class="hint">The stock universe could not be loaded.</p>
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- donut + projection -->
-    <div class="basket__side">
-      <div class="panel">
-        <div class="panel__head"><h3 class="panel__title">Split</h3></div>
-        <div class="panel__body">
-          <figure class="donut" id="donut">
-            <svg class="donut__svg" id="donut-svg" viewBox="0 0 120 120" role="img" aria-labelledby="donut-a11y">
-              <title id="donut-a11y">Your allocation across the stocks you picked</title>
-              <circle class="donut__track" cx="60" cy="60" r="46"></circle>
-              <!-- placeholder ring: visible until JS draws real arcs -->
-              <circle class="donut__placeholder" id="donut-placeholder" cx="60" cy="60" r="46"></circle>
-              <!-- JS appends <circle class="donut__arc" data-slice="0..4"> here,
-                   each with stroke-dasharray / stroke-dashoffset on r=46 -->
-              <g id="donut-arcs" transform="rotate(-90 60 60)"></g>
-              <text class="donut__center-value" id="donut-center-value" x="60" y="57">—</text>
-              <text class="donut__center-label" x="60" y="72">allocated</text>
-            </svg>
-            <figcaption class="donut__caption" id="donut-caption">Nothing allocated yet.</figcaption>
-          </figure>
-
-          <ul class="legend" id="donut-legend"></ul>
-        </div>
-      </div>
-
-      <div class="panel" id="projection" data-state="empty">
-        <div class="panel__head">
-          <h3 class="panel__title">Projected next drop</h3>
+      <!-- projection -->
+      <div class="card__block" id="projection" data-state="empty">
+        <div class="row-between">
+          <p class="micro">Projected next drop</p>
           <span class="badge badge--sim" id="projection-sim" hidden>Simulated</span>
         </div>
 
-        <div class="pane pane--ready panel__body">
+        <div class="pane pane--ready">
           <dl class="kv">
             <div class="kv__row"><dt class="kv__key">Your balance</dt><dd class="kv__val skel-text" id="proj-balance">—</dd></div>
             <div class="kv__row"><dt class="kv__key">Eligible</dt><dd class="kv__val" id="proj-eligibility">—</dd></div>
             <div class="kv__row" id="proj-cycle-row" hidden><dt class="kv__key">Held the whole cycle</dt><dd class="kv__val" id="proj-cycle">—</dd></div>
             <div class="kv__row"><dt class="kv__key">Share of pool</dt><dd class="kv__val skel-text" id="proj-share">—</dd></div>
-            <div class="kv__row"><dt class="kv__key">Pool now</dt><dd class="kv__val skel-text" id="proj-pool">—</dd></div>
           </dl>
-          <!-- The "you bought this cycle, your first drop is the round after"
-               case. Calm, not alarming: it is a normal state, not an error. -->
-          <div class="callout callout--info" id="proj-cycle-note" style="margin-top:12px" hidden>
+          <div class="callout callout--info" id="proj-cycle-note" hidden>
             <p class="callout__title" id="proj-cycle-note-title">Your first drop is the next round</p>
             <p class="callout__text" id="proj-cycle-note-text"></p>
           </div>
           <p class="hint" id="proj-note">Amounts are estimates until the round runs.</p>
         </div>
 
-        <div class="pane pane--loading panel__body">
-          <p class="skel skel--w70" aria-hidden="true"></p>
-          <p class="skel skel--w50" style="margin-top:12px" aria-hidden="true"></p>
-          <p class="skel skel--w60" style="margin-top:12px" aria-hidden="true"></p>
+        <div class="pane pane--loading" aria-hidden="true">
+          <span class="skel skel--w70"></span>
+          <span class="skel skel--w50" style="margin-top:12px"></span>
+          <span class="skel skel--w60" style="margin-top:12px"></span>
         </div>
 
         <div class="pane pane--empty">
           <div class="state-block">
-            <p class="state-block__title">Not connected</p>
             <p class="state-block__text">Connect a wallet to see whether it is eligible and what the next round would send it. Connecting is one message signature — no transaction, nothing leaves your wallet.</p>
             <span class="state-block__actions">
               <button class="btn btn--sm" id="btn-projection-connect" type="button">Connect wallet</button>
@@ -487,602 +574,236 @@
           </div>
         </div>
       </div>
-
-      
     </div>
   </div>
 </section>
 
 <!-- ======================================================================
-     TOP 20
+     PANEL 3 — DEMAND
      ====================================================================== -->
-<section class="shell section" id="stocks" aria-labelledby="stocks-title">
-  <div class="section__head">
-    <h2 class="section__title" id="stocks-title">Top 20 tokenised stocks</h2>
-    <p class="section__note">Ranked by the underlying company's market cap, filtered to xStocks with real Jupiter liquidity. Re-ranked every round.</p>
-    <div class="section__actions">
-      <span class="count-hint" id="stocks-updated">—</span>
+<section class="view" id="panel-demand" role="tabpanel" aria-labelledby="tab-demand" tabindex="-1" hidden>
+  <h2 class="sr-only">Community demand</h2>
+
+  <div class="split split--even">
+
+    <div class="card">
+      <p class="micro card__eyebrow">Community demand</p>
+      <div class="row-between">
+        <h3 class="card__title">Everyone's baskets &rarr; one buy</h3>
+        <span class="badge badge--muted" id="demand-basis">equal-weight</span>
+      </div>
+      <p class="card__sub">Weighted by holder balance at the snapshot.</p>
+
+      <div id="demand-panel" data-state="loading">
+        <div class="pane pane--loading" aria-hidden="true">
+          <div class="bar-row"><span class="skel skel--sm" style="width:62px"></span><span class="skel" style="height:10px"></span><span class="skel skel--sm" style="width:38px;margin-left:auto"></span></div>
+          <div class="bar-row"><span class="skel skel--sm" style="width:62px"></span><span class="skel" style="height:10px"></span><span class="skel skel--sm" style="width:38px;margin-left:auto"></span></div>
+          <div class="bar-row"><span class="skel skel--sm" style="width:62px"></span><span class="skel" style="height:10px"></span><span class="skel skel--sm" style="width:38px;margin-left:auto"></span></div>
+          <div class="bar-row"><span class="skel skel--sm" style="width:62px"></span><span class="skel" style="height:10px"></span><span class="skel skel--sm" style="width:38px;margin-left:auto"></span></div>
+          <div class="bar-row"><span class="skel skel--sm" style="width:62px"></span><span class="skel" style="height:10px"></span><span class="skel skel--sm" style="width:38px;margin-left:auto"></span></div>
+          <div class="bar-row"><span class="skel skel--sm" style="width:62px"></span><span class="skel" style="height:10px"></span><span class="skel skel--sm" style="width:38px;margin-left:auto"></span></div>
+        </div>
+
+        <ul class="pane pane--ready bars" id="demand-bars"></ul>
+
+        <div class="pane pane--empty" id="demand-empty">
+          <div class="state-block">
+            <p class="state-block__title">No picks saved yet</p>
+            <p class="state-block__text">Nobody has saved a basket. Until someone does, every round buys the default basket: <span data-default-basket>the top five by market cap, 20% each</span>.</p>
+          </div>
+        </div>
+
+        <div class="pane pane--error" id="demand-error">
+          <div class="state-block">
+            <p class="state-block__title">Demand unavailable</p>
+            <p class="state-block__text" id="demand-error-text">The API did not respond.</p>
+            <span class="state-block__actions">
+              <button class="btn btn--sm" id="btn-demand-retry" type="button">Retry</button>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <p class="card__foot" id="demand-note">
+        Before launch, every saved basket counts equally. Once the token exists, each wallet's weight is its balance at the snapshot.
+      </p>
     </div>
-  </div>
 
-  <div class="panel panel--flat">
-    <div class="table-scroll">
-      <table class="table table--wide table--cards" id="stocks-table" data-state="loading">
-        <caption class="sr-only">Top 20 tokenised stocks by underlying market capitalisation. Activate a ticker to open its price chart.</caption>
-        <thead>
-          <tr>
-            <th scope="col" style="width:44px" aria-sort="ascending">
-              <button class="th-sort" type="button" data-sort="rank">#
-                <svg class="th-sort__arrow" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="M4 1l3 5H1z" fill="currentColor"/></svg>
-              </button>
-            </th>
-            <th scope="col">Ticker</th>
-            <th scope="col">Company</th>
-            <th scope="col" class="num" aria-sort="none">
-              <button class="th-sort" type="button" data-sort="price">Price
-                <svg class="th-sort__arrow" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="M4 1l3 5H1z" fill="currentColor"/></svg>
-              </button>
-            </th>
-            <th scope="col" class="num" aria-sort="none">
-              <button class="th-sort" type="button" data-sort="change24h">24h
-                <svg class="th-sort__arrow" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="M4 1l3 5H1z" fill="currentColor"/></svg>
-              </button>
-            </th>
-            <th scope="col" class="num" aria-sort="none">
-              <button class="th-sort" type="button" data-sort="underlyingMcap">Mkt cap
-                <svg class="th-sort__arrow" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="M4 1l3 5H1z" fill="currentColor"/></svg>
-              </button>
-            </th>
-            <th scope="col" class="num" aria-sort="none">
-              <button class="th-sort" type="button" data-sort="liquidityUsd">Liquidity
-                <svg class="th-sort__arrow" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="M4 1l3 5H1z" fill="currentColor"/></svg>
-              </button>
-            </th>
-            <th scope="col" style="width:100px">7D</th>
-            <th scope="col" style="width:120px"><span class="sr-only">Add to basket</span></th>
-          </tr>
-        </thead>
-
-        <tbody class="pane pane--loading pane-as-tbody" id="stocks-skeleton" aria-hidden="true">
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td class="cell-rank"><span class="skel skel--sm" style="width:18px"></span></td>
-            <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-            <td><span class="skel skel--sm" style="width:104px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:58px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:46px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:66px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:62px;margin-left:auto"></span></td>
-            <td><span class="skel skel--sm" style="width:84px"></span></td>
-            <td><span class="skel skel--pill" style="width:52px;height:24px"></span></td>
-          </tr>
-        </tbody>
-
-        <tbody class="pane pane--ready pane-as-tbody" id="stocks-body"></tbody>
-
-        <tbody class="pane pane--empty pane-as-tbody" id="stocks-empty">
-          <tr class="state-row"><td colspan="9" data-cell="state">
-            <div class="state-block state-block--center">
-              <p class="state-block__title">No stocks meet the liquidity floor</p>
-              <p class="state-block__text">The universe is empty right now — every xStock is below the $50,000 on-chain liquidity minimum, or the price source is unreachable.</p>
-            </div>
-          </td></tr>
-        </tbody>
-
-        <tbody class="pane pane--error pane-as-tbody" id="stocks-error">
-          <tr class="state-row"><td colspan="9" data-cell="state">
-            <div class="state-block state-block--center">
-              <p class="state-block__title">Could not load the universe</p>
-              <p class="state-block__text" id="stocks-error-text">The API did not respond.</p>
-              <span class="state-block__actions">
-                <button class="btn btn--sm" id="btn-stocks-retry" type="button">Retry</button>
-              </span>
-            </div>
-          </td></tr>
-        </tbody>
-      </table>
+    <div class="card">
+      <p class="micro card__eyebrow">Vault execution</p>
+      <ol class="flow">
+        <li class="flow__step">
+          <p class="flow__title">Community demand</p>
+          <p class="flow__text">Aggregated orders</p>
+        </li>
+        <li class="flow__arrow" aria-hidden="true">
+          <svg viewBox="0 0 16 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v18M3 15l5 5 5-5"/></svg>
+        </li>
+        <li class="flow__step">
+          <p class="flow__title">Vault buys once</p>
+          <p class="flow__text"><span class="tag mono">Jupiter</span> · xStocks route</p>
+        </li>
+        <li class="flow__arrow" aria-hidden="true">
+          <svg viewBox="0 0 16 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v18M3 15l5 5 5-5"/></svg>
+        </li>
+        <li class="flow__step">
+          <p class="flow__title">Split to holders</p>
+          <p class="flow__text">Pro-rata by picks &amp; balance</p>
+        </li>
+      </ol>
+      <p class="card__foot">One order per stock, not one per person — the same amount arrives, for far less in fees.</p>
     </div>
   </div>
 </section>
 
 <!-- ======================================================================
-     COMMUNITY DEMAND
+     PANEL 4 — ROUNDS
      ====================================================================== -->
-<section class="shell section" id="demand" aria-labelledby="demand-title">
-  <div class="section__head">
-    <h2 class="section__title" id="demand-title">Community demand</h2>
-    <p class="section__note">Every wallet's picks added together. This is the split the next round would buy.</p>
-    <div class="section__actions">
-      <span class="badge badge--muted" id="demand-basis">equal-weight</span>
-    </div>
-  </div>
+<section class="view" id="panel-rounds" role="tabpanel" aria-labelledby="tab-rounds" tabindex="-1" hidden>
+  <h2 class="sr-only">Rounds</h2>
 
-  <div class="panel">
-    <div class="panel__body" id="demand-panel" data-state="loading">
-      <div class="pane pane--loading" id="demand-skeleton" aria-hidden="true">
-        <div class="bar-row">
-          <span class="skel skel--sm" style="width:62px"></span>
-          <span class="skel" style="height:14px"></span>
-          <span class="skel skel--sm" style="width:38px;margin-left:auto"></span>
-        </div>
-        <div class="bar-row">
-          <span class="skel skel--sm" style="width:62px"></span>
-          <span class="skel" style="height:14px"></span>
-          <span class="skel skel--sm" style="width:38px;margin-left:auto"></span>
-        </div>
-        <div class="bar-row">
-          <span class="skel skel--sm" style="width:62px"></span>
-          <span class="skel" style="height:14px"></span>
-          <span class="skel skel--sm" style="width:38px;margin-left:auto"></span>
-        </div>
-        <div class="bar-row">
-          <span class="skel skel--sm" style="width:62px"></span>
-          <span class="skel" style="height:14px"></span>
-          <span class="skel skel--sm" style="width:38px;margin-left:auto"></span>
-        </div>
-        <div class="bar-row">
-          <span class="skel skel--sm" style="width:62px"></span>
-          <span class="skel" style="height:14px"></span>
-          <span class="skel skel--sm" style="width:38px;margin-left:auto"></span>
-        </div>
-        <div class="bar-row">
-          <span class="skel skel--sm" style="width:62px"></span>
-          <span class="skel" style="height:14px"></span>
-          <span class="skel skel--sm" style="width:38px;margin-left:auto"></span>
-        </div>
+  <div class="split split--ledger">
+
+    <div class="card card--list">
+      <p class="micro card__eyebrow">Round ledger</p>
+      <div class="row-between">
+        <h3 class="card__title">Transparency · every round recorded</h3>
+        <span class="count-hint" id="rounds-count">—</span>
+      </div>
+      <p class="card__sub">Snapshot hash · pool · swaps · transfers — anyone can recompute.</p>
+
+      <div class="kvpair kvpair--ruled">
+        <span class="kvpair__cell">
+          <span class="micro">Distributed</span>
+          <span class="kvpair__val mono gold" id="stat-distributed">—</span>
+        </span>
+        <span class="kvpair__cell kvpair__cell--end">
+          <span class="micro">Rounds</span>
+          <span class="kvpair__val mono" id="stat-rounds-count">—</span>
+        </span>
       </div>
 
-      <ul class="pane pane--ready bars" id="demand-bars"></ul>
-
-      <div class="pane pane--empty" id="demand-empty">
-        <div class="state-block">
-          <p class="state-block__title">No picks saved yet</p>
-          <p class="state-block__text">Nobody has saved a basket. Until someone does, every round buys the default basket: <span data-default-basket>the top five by market cap, 20% each</span>.</p>
-        </div>
-      </div>
-
-      <div class="pane pane--error" id="demand-error">
-        <div class="state-block">
-          <p class="state-block__title">Demand unavailable</p>
-          <p class="state-block__text" id="demand-error-text">The API did not respond.</p>
-          <span class="state-block__actions">
-            <button class="btn btn--sm" id="btn-demand-retry" type="button">Retry</button>
-          </span>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel__foot" id="demand-note">
-      Before launch, every saved basket counts equally. Once the token exists, each wallet's weight is its balance at the snapshot.
-    </div>
-  </div>
-</section>
-
-<!-- ======================================================================
-     VAULT
-     ====================================================================== -->
-<section class="shell section" id="vault" aria-labelledby="vault-title">
-  <div class="section__head">
-    <h2 class="section__title" id="vault-title">Vault</h2>
-    <p class="section__note">One wallet, one purpose. Its balance minus the fee reserve is the pool for the next round.</p>
-    <div class="section__actions">
-      <span class="count-hint" id="vault-updated">—</span>
-    </div>
-  </div>
-
-  <div class="vault">
-    <div class="panel">
-      <div class="panel__head">
-        <h3 class="panel__title">Balance and pool</h3>
-      </div>
-      <div class="panel__body">
-        <dl class="kv" id="vault-figures" data-state="loading">
-          <div class="kv__row"><dt class="kv__key">Balance</dt><dd class="kv__val skel-text" id="vault-balance-sol">—</dd></div>
-          <div class="kv__row"><dt class="kv__key">Balance (USD)</dt><dd class="kv__val skel-text" id="vault-balance-usd">—</dd></div>
-          <div class="kv__row"><dt class="kv__key">Fee reserve</dt><dd class="kv__val skel-text" id="vault-reserve">—</dd></div>
-          <div class="kv__row"><dt class="kv__key">Pool for next round</dt><dd class="kv__val skel-text" id="vault-pool">—</dd></div>
-          <div class="kv__row"><dt class="kv__key">Minimum to run</dt><dd class="kv__val" id="vault-min-pool">0.5 SOL</dd></div>
-        </dl>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel__head">
-        <h3 class="panel__title">Carry-over holdings</h3>
-        <span class="count-hint" id="vault-holdings-count">—</span>
-      </div>
       <div class="table-scroll">
-        <table class="table table--cards" id="vault-holdings-table" data-state="loading">
-          <caption class="sr-only">Stock tokens held by the vault as carry-over dust</caption>
+        <table class="table table--ledger" id="rounds-table" data-state="loading">
+          <caption class="sr-only">Round ledger. Each row expands to show swaps and transfers.</caption>
           <thead>
             <tr>
-              <th scope="col">Stock</th>
-              <th scope="col" class="num">Amount</th>
-              <th scope="col" class="num">Mint</th>
+              <th scope="col" class="col-tick"><span class="sr-only">Expand</span></th>
+              <th scope="col">Round</th>
+              <th scope="col">Scheduled (UTC)</th>
+              <th scope="col">Status</th>
+              <th scope="col" class="num">Pool</th>
+              <th scope="col" class="num">Stocks</th>
+              <th scope="col" class="num">Holders</th>
+              <th scope="col" class="num">Transfers</th>
             </tr>
           </thead>
 
-          <tbody class="pane pane--loading pane-as-tbody" id="vault-holdings-skeleton" aria-hidden="true">
+          <tbody class="pane pane--loading pane-as-tbody" id="rounds-skeleton" aria-hidden="true">
             <tr class="skel-row">
-              <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-              <td class="num"><span class="skel skel--sm" style="width:72px;margin-left:auto"></span></td>
-              <td class="num"><span class="skel skel--sm" style="width:88px;margin-left:auto"></span></td>
+              <td><span class="skel skel--circle" style="width:16px;height:16px"></span></td>
+              <td><span class="skel skel--sm" style="width:56px"></span></td>
+              <td><span class="skel skel--sm" style="width:96px"></span></td>
+              <td><span class="skel skel--pill" style="width:56px;height:18px"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:52px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:24px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:32px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:36px;margin-left:auto"></span></td>
             </tr>
             <tr class="skel-row">
-              <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-              <td class="num"><span class="skel skel--sm" style="width:72px;margin-left:auto"></span></td>
-              <td class="num"><span class="skel skel--sm" style="width:88px;margin-left:auto"></span></td>
+              <td><span class="skel skel--circle" style="width:16px;height:16px"></span></td>
+              <td><span class="skel skel--sm" style="width:56px"></span></td>
+              <td><span class="skel skel--sm" style="width:96px"></span></td>
+              <td><span class="skel skel--pill" style="width:56px;height:18px"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:52px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:24px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:32px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:36px;margin-left:auto"></span></td>
             </tr>
             <tr class="skel-row">
-              <td><span class="cell-identity"><span class="skel skel--circle"></span><span class="skel skel--sm" style="width:54px"></span></span></td>
-              <td class="num"><span class="skel skel--sm" style="width:72px;margin-left:auto"></span></td>
-              <td class="num"><span class="skel skel--sm" style="width:88px;margin-left:auto"></span></td>
+              <td><span class="skel skel--circle" style="width:16px;height:16px"></span></td>
+              <td><span class="skel skel--sm" style="width:56px"></span></td>
+              <td><span class="skel skel--sm" style="width:96px"></span></td>
+              <td><span class="skel skel--pill" style="width:56px;height:18px"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:52px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:24px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:32px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:36px;margin-left:auto"></span></td>
+            </tr>
+            <tr class="skel-row">
+              <td><span class="skel skel--circle" style="width:16px;height:16px"></span></td>
+              <td><span class="skel skel--sm" style="width:56px"></span></td>
+              <td><span class="skel skel--sm" style="width:96px"></span></td>
+              <td><span class="skel skel--pill" style="width:56px;height:18px"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:52px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:24px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:32px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:36px;margin-left:auto"></span></td>
+            </tr>
+            <tr class="skel-row">
+              <td><span class="skel skel--circle" style="width:16px;height:16px"></span></td>
+              <td><span class="skel skel--sm" style="width:56px"></span></td>
+              <td><span class="skel skel--sm" style="width:96px"></span></td>
+              <td><span class="skel skel--pill" style="width:56px;height:18px"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:52px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:24px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:32px;margin-left:auto"></span></td>
+              <td class="num"><span class="skel skel--sm" style="width:36px;margin-left:auto"></span></td>
             </tr>
           </tbody>
 
-          <tbody class="pane pane--ready pane-as-tbody" id="vault-holdings-body"></tbody>
+          <tbody class="pane pane--ready pane-as-tbody" id="rounds-body"></tbody>
 
-          <tbody class="pane pane--empty pane-as-tbody" id="vault-holdings-empty">
-            <tr class="state-row"><td colspan="3" data-cell="state">
+          <tbody class="pane pane--empty pane-as-tbody" id="rounds-empty">
+            <tr class="state-row"><td colspan="8" data-cell="state">
               <div class="state-block">
-                <p class="state-block__title">No carry-over</p>
-                <p class="state-block__text">The vault holds no stock tokens between rounds. Amounts too small to send are held here and added to the next drop.</p>
+                <p class="state-block__title">No rounds yet</p>
+                <p class="state-block__text">
+                  The first round runs at <span class="mono" id="rounds-empty-time">the next 6-hour mark (00:00, 06:00, 12:00 or 18:00 UTC)</span>.
+                  Rounds are skipped while the token has not launched or the pool is under the minimum — skipped rounds are recorded here too.
+                </p>
               </div>
             </td></tr>
           </tbody>
 
-          <tbody class="pane pane--error pane-as-tbody" id="vault-holdings-error">
-            <tr class="state-row"><td colspan="3" data-cell="state">
+          <tbody class="pane pane--error pane-as-tbody" id="rounds-error">
+            <tr class="state-row"><td colspan="8" data-cell="state">
               <div class="state-block">
-                <p class="state-block__title">Holdings unavailable</p>
-                <p class="state-block__text">The API did not respond.</p>
+                <p class="state-block__title">Ledger unavailable</p>
+                <p class="state-block__text" id="rounds-error-text">The API did not respond.</p>
+                <span class="state-block__actions">
+                  <button class="btn btn--sm" id="btn-rounds-retry" type="button">Retry</button>
+                </span>
               </div>
             </td></tr>
           </tbody>
         </table>
       </div>
-      <div class="panel__foot">Token-account rent is paid by the project, never deducted from a holder's drop.</div>
-    </div>
-  </div>
-</section>
 
-<!-- ======================================================================
-     ROUNDS LEDGER
-     ====================================================================== -->
-<section class="shell section" id="rounds" aria-labelledby="rounds-title">
-  <div class="section__head">
-    <h2 class="section__title" id="rounds-title">Rounds</h2>
-    <p class="section__note">Every round is recorded in full: snapshot hash, pool, per-stock swaps, per-holder transfers. Anyone can recompute it.</p>
-    <div class="section__actions">
-      <span class="count-hint" id="rounds-count">—</span>
-    </div>
-  </div>
-
-  <div class="panel panel--flat">
-    <div class="table-scroll">
-      <table class="table table--ledger" id="rounds-table" data-state="loading">
-        <caption class="sr-only">Round ledger. Each row expands to show swaps and transfers.</caption>
-        <thead>
-          <tr>
-            <th scope="col" style="width:32px"><span class="sr-only">Expand</span></th>
-            <th scope="col">Round</th>
-            <th scope="col">Scheduled (UTC)</th>
-            <th scope="col">Status</th>
-            <th scope="col" class="num">Pool</th>
-            <th scope="col" class="num">Stocks</th>
-            <th scope="col" class="num">Holders</th>
-            <th scope="col" class="num">Transfers</th>
-          </tr>
-        </thead>
-
-        <tbody class="pane pane--loading pane-as-tbody" id="rounds-skeleton" aria-hidden="true">
-          <tr class="skel-row">
-            <td><span class="skel skel--circle" style="width:16px;height:16px"></span></td>
-            <td><span class="skel skel--sm" style="width:96px"></span></td>
-            <td><span class="skel skel--sm" style="width:120px"></span></td>
-            <td><span class="skel skel--pill" style="width:56px;height:18px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:52px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:32px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:40px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:44px;margin-left:auto"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td><span class="skel skel--circle" style="width:16px;height:16px"></span></td>
-            <td><span class="skel skel--sm" style="width:96px"></span></td>
-            <td><span class="skel skel--sm" style="width:120px"></span></td>
-            <td><span class="skel skel--pill" style="width:56px;height:18px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:52px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:32px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:40px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:44px;margin-left:auto"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td><span class="skel skel--circle" style="width:16px;height:16px"></span></td>
-            <td><span class="skel skel--sm" style="width:96px"></span></td>
-            <td><span class="skel skel--sm" style="width:120px"></span></td>
-            <td><span class="skel skel--pill" style="width:56px;height:18px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:52px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:32px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:40px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:44px;margin-left:auto"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td><span class="skel skel--circle" style="width:16px;height:16px"></span></td>
-            <td><span class="skel skel--sm" style="width:96px"></span></td>
-            <td><span class="skel skel--sm" style="width:120px"></span></td>
-            <td><span class="skel skel--pill" style="width:56px;height:18px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:52px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:32px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:40px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:44px;margin-left:auto"></span></td>
-          </tr>
-          <tr class="skel-row">
-            <td><span class="skel skel--circle" style="width:16px;height:16px"></span></td>
-            <td><span class="skel skel--sm" style="width:96px"></span></td>
-            <td><span class="skel skel--sm" style="width:120px"></span></td>
-            <td><span class="skel skel--pill" style="width:56px;height:18px"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:52px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:32px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:40px;margin-left:auto"></span></td>
-            <td class="num"><span class="skel skel--sm" style="width:44px;margin-left:auto"></span></td>
-          </tr>
-        </tbody>
-
-        <tbody class="pane pane--ready pane-as-tbody" id="rounds-body"></tbody>
-
-        <tbody class="pane pane--empty pane-as-tbody" id="rounds-empty">
-          <tr class="state-row"><td colspan="8" data-cell="state">
-            <div class="state-block">
-              <p class="state-block__title">No rounds yet</p>
-              <p class="state-block__text">
-                The first round runs at <span class="mono" id="rounds-empty-time">the next 6-hour mark (00:00, 06:00, 12:00 or 18:00 UTC)</span>.
-                Rounds are skipped while the token has not launched or the pool is under the minimum — skipped rounds are recorded here too.
-              </p>
-            </div>
-          </td></tr>
-        </tbody>
-
-        <tbody class="pane pane--error pane-as-tbody" id="rounds-error">
-          <tr class="state-row"><td colspan="8" data-cell="state">
-            <div class="state-block">
-              <p class="state-block__title">Ledger unavailable</p>
-              <p class="state-block__text" id="rounds-error-text">The API did not respond.</p>
-              <span class="state-block__actions">
-                <button class="btn btn--sm" id="btn-rounds-retry" type="button">Retry</button>
-              </span>
-            </div>
-          </td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <div class="panel__foot">
-      <div class="row-between">
-        <span id="rounds-foot-note">Times are UTC. The snapshot is taken at a random offset within ±10 minutes of each mark.</span>
+      <p class="card__foot">
+        <span id="rounds-foot-note">Times are UTC. The snapshot is taken at a random offset within &pm;10 minutes of each mark.</span>
         <button class="btn btn--sm" id="btn-rounds-more" type="button" hidden>Load older rounds</button>
-      </div>
+      </p>
+    </div>
+
+    <!-- Shown only when the connected wallet has transfers in the latest
+         round. Never rendered from anything the API did not return. -->
+    <div class="card card--arrivals" id="arrivals" hidden>
+      <h3 class="card__title">Stocks arrived in your wallet</h3>
+      <p class="card__sub"><span class="mono" id="arrivals-round">—</span> · no claim needed</p>
+      <ul class="arrivals" id="arrivals-list"></ul>
+      <p class="card__foot">Sent directly to your wallet. There is no button to press.</p>
     </div>
   </div>
 </section>
 
 <!-- ======================================================================
-     HOW IT WORKS
+     PANEL 5 — HOW IT WORKS
      ====================================================================== -->
-<section class="shell section" id="how" aria-labelledby="how-title">
-  <div class="section__head">
-    <h2 class="section__title" id="how-title">How it works</h2>
-    <p class="section__note">In plain English. No jargon, no homework. About two minutes to read.</p>
-  </div>
+<section class="view" id="panel-how" role="tabpanel" aria-labelledby="tab-how" tabindex="-1" hidden>
+  <h2 class="sr-only">How it works</h2>
 
-  <div class="callout callout--info how__intro">
+  <div class="card callout callout--info how__intro">
     <p class="callout__title">The whole idea, in one breath</p>
     <p class="callout__text">
       You hold our coin. The coin earns money whenever people trade it. Every
@@ -1111,7 +832,7 @@
            exactly what a server with anti-cheat switched off does. -->
       <h3 class="step__title" id="step-snapshot-title">A snapshot is taken</h3>
       <p class="step__text" id="step-snapshot-text">
-        Every <span id="step-interval">6</span> hours, at a random offset within ±10 minutes of the
+        Every <span id="step-interval">6</span> hours, at a random offset within &pm;10 minutes of the
         mark, so the exact moment cannot be gamed.
       </p>
     </li>
@@ -1133,7 +854,7 @@
       <span class="step__num">STEP 4</span>
       <h3 class="step__title">Your slice is spent on the stocks you chose</h3>
       <p class="step__text">
-        Up in <a class="link" href="#basket">Your basket</a> you pick between two and five companies
+        In <button class="link linkbtn" type="button" data-tab-link="basket">Basket</button> you pick between two and five companies
         and say how much of your slice each one gets. Never chose anything? That is completely fine.
         You get the standard basket instead, which is currently
         <span data-default-basket>the top five by market cap, 20% each</span>.
@@ -1163,103 +884,101 @@
     </li>
   </ol>
 
-  <div class="how__panels">
-    <div class="panel">
-      <div class="panel__head"><h3 class="panel__title">A worked example</h3></div>
-      <div class="panel__body">
-        <p class="how__lede">
-          Say the jar has <strong class="strong">10 SOL</strong> in it, and only two people qualify
-          this round.
-        </p>
-        <ul class="how__list">
-          <li>
-            <strong class="strong">Maya</strong> holds 30 million coins and picked
-            <em>Tesla 60% / Nvidia 40%</em>.
-          </li>
-          <li>
-            <strong class="strong">Sam</strong> holds 10 million coins and never picked anything.
-          </li>
-        </ul>
-        <p class="how__lede">
-          Maya holds three quarters of the qualifying coins, so three quarters of the jar,
-          <strong class="strong">7.5 SOL</strong>, is spent on her behalf: 4.5 SOL of Tesla and 3 SOL
-          of Nvidia. Sam gets the other <strong class="strong">2.5 SOL</strong>, spent on the standard
-          basket. Both wake up to real stock in their wallet, and the jar starts over.
-        </p>
-        <p class="how__fine">
-          Numbers are rounded for the example. Real rounds are worked out to the smallest unit, and
-          every round is published in the <a class="link" href="#rounds">ledger</a> so you can check
-          the arithmetic yourself.
-        </p>
-      </div>
+  <ul class="rules-list" id="rules-list">
+    <li>Pick <span id="rule-picks-range">2–5</span> stocks.</li>
+    <li>Each one gets <span id="rule-pct-range">10–60%</span>, whole numbers only, adding up to 100%.</li>
+    <li>You choose from the top <span id="rule-universe-size">20</span> by underlying market cap.</li>
+    <li>A wallet needs <span id="rule-eligible-pct">0.1%</span> of supply to be counted.</li>
+  </ul>
+
+  <div class="split split--even how__panels">
+    <div class="card">
+      <h3 class="card__title">A worked example</h3>
+      <p class="how__lede">
+        Say the jar has <strong class="strong">10 SOL</strong> in it, and only two people qualify
+        this round.
+      </p>
+      <ul class="how__list">
+        <li><strong class="strong">Maya</strong> holds 30 million coins and picked <em>Tesla 60% / Nvidia 40%</em>.</li>
+        <li><strong class="strong">Sam</strong> holds 10 million coins and never picked anything.</li>
+      </ul>
+      <p class="how__lede">
+        Maya holds three quarters of the qualifying coins, so three quarters of the jar,
+        <strong class="strong">7.5 SOL</strong>, is spent on her behalf: 4.5 SOL of Tesla and 3 SOL
+        of Nvidia. Sam gets the other <strong class="strong">2.5 SOL</strong>, spent on the standard
+        basket. Both wake up to real stock in their wallet, and the jar starts over.
+      </p>
+      <p class="how__fine">
+        Numbers are rounded for the example. Real rounds are worked out to the smallest unit, and
+        every round is published in the <button class="link linkbtn" type="button" data-tab-link="rounds">ledger</button> so you can check
+        the arithmetic yourself.
+      </p>
     </div>
 
-    <div class="panel">
-      <div class="panel__head"><h3 class="panel__title">Questions people actually ask</h3></div>
-      <div class="panel__body panel__body--flush">
-        <dl class="faq">
-          <dt class="faq__q">Do I have to claim anything?</dt>
-          <dd class="faq__a">
-            No. Nothing to click, nothing to sign, no deadline. The stocks are sent to you.
-          </dd>
+    <div class="card">
+      <h3 class="card__title">Questions people actually ask</h3>
+      <dl class="faq">
+        <dt class="faq__q">Do I have to claim anything?</dt>
+        <dd class="faq__a">
+          No. Nothing to click, nothing to sign, no deadline. The stocks are sent to you.
+        </dd>
 
-          <dt class="faq__q">I bought today and got nothing. Why?</dt>
-          <dd class="faq__a">
-            You have to hold for a whole round, start to finish. We check twice: once near the start
-            and once at the end, and you are paid on the smaller of the two. Buying halfway through
-            means you were not there at the start, so that round pays you nothing.
-            <strong class="strong">Your first drop is the next one</strong>, and it arrives
-            automatically.
-          </dd>
+        <dt class="faq__q">I bought today and got nothing. Why?</dt>
+        <dd class="faq__a">
+          You have to hold for a whole round, start to finish. We check twice: once near the start
+          and once at the end, and you are paid on the smaller of the two. Buying halfway through
+          means you were not there at the start, so that round pays you nothing.
+          <strong class="strong">Your first drop is the next one</strong>, and it arrives
+          automatically.
+        </dd>
 
-          <dt class="faq__q">What if I sell before the drop?</dt>
-          <dd class="faq__a">
-            Then you get nothing for that round. That is the point of checking twice: it stops people
-            buying minutes before a drop, taking a share, and selling straight after at the expense of
-            everyone who actually held.
-          </dd>
+        <dt class="faq__q">What if I sell before the drop?</dt>
+        <dd class="faq__a">
+          Then you get nothing for that round. That is the point of checking twice: it stops people
+          buying minutes before a drop, taking a share, and selling straight after at the expense of
+          everyone who actually held.
+        </dd>
 
-          <dt class="faq__q">What if I never pick any stocks?</dt>
-          <dd class="faq__a">
-            Nothing bad happens. You still get paid, using the standard basket:
-            <span data-default-basket>the top five by market cap, 20% each</span>. Picking is
-            optional, always.
-          </dd>
+        <dt class="faq__q">What if I never pick any stocks?</dt>
+        <dd class="faq__a">
+          Nothing bad happens. You still get paid, using the standard basket:
+          <span data-default-basket>the top five by market cap, 20% each</span>. Picking is
+          optional, always.
+        </dd>
 
-          <dt class="faq__q">Does connecting my wallet cost me anything, or let you take my coins?</dt>
-          <dd class="faq__a">
-            No to both. Connecting asks you to sign one short message, which is just a way of proving
-            the wallet is yours. It is <strong class="strong">not a transaction</strong>. It costs
-            nothing, moves nothing, and gives us no permission over anything you hold.
-          </dd>
+        <dt class="faq__q">Does connecting my wallet cost me anything, or let you take my coins?</dt>
+        <dd class="faq__a">
+          No to both. Connecting asks you to sign one short message, which is just a way of proving
+          the wallet is yours. It is <strong class="strong">not a transaction</strong>. It costs
+          nothing, moves nothing, and gives us no permission over anything you hold.
+        </dd>
 
-          <dt class="faq__q">Are there fees taken out of my drop?</dt>
-          <dd class="faq__a">
-            No. Holding a new kind of stock costs a tiny one-off deposit on Solana, and
-            <strong class="strong">the project pays that for you</strong> rather than taking it out of
-            what you receive.
-          </dd>
+        <dt class="faq__q">Are there fees taken out of my drop?</dt>
+        <dd class="faq__a">
+          No. Holding a new kind of stock costs a tiny one-off deposit on Solana, and
+          <strong class="strong">the project pays that for you</strong> rather than taking it out of
+          what you receive.
+        </dd>
 
-          <dt class="faq__q">Can I change my picks later?</dt>
-          <dd class="faq__a">
-            Any time. A change applies from the next round onward, never to one already under way.
-          </dd>
+        <dt class="faq__q">Can I change my picks later?</dt>
+        <dd class="faq__a">
+          Any time. A change applies from the next round onward, never to one already under way.
+        </dd>
 
-          <dt class="faq__q">What if a company I picked drops out of the top 20?</dt>
-          <dd class="faq__a">
-            Its share is spread across your other picks for that round, so nothing is lost or left
-            unspent. The site flags it so you can choose a replacement.
-          </dd>
+        <dt class="faq__q">What if a company I picked drops out of the top 20?</dt>
+        <dd class="faq__a">
+          Its share is spread across your other picks for that round, so nothing is lost or left
+          unspent. The site flags it so you can choose a replacement.
+        </dd>
 
-          <dt class="faq__q">Am I really buying shares?</dt>
-          <dd class="faq__a">
-            Not quite, and this part matters. You receive
-            <strong class="strong">tokenised stock issued by Backed Finance</strong>, which tracks the
-            company's price. It is not the same as owning a share through a broker: no voting, and you
-            are trusting the issuer. Their price can fall as well as rise, like any stock.
-          </dd>
-        </dl>
-      </div>
+        <dt class="faq__q">Am I really buying shares?</dt>
+        <dd class="faq__a">
+          Not quite, and this part matters. You receive
+          <strong class="strong">tokenised stock issued by Backed Finance</strong>, which tracks the
+          company's price. It is not the same as owning a share through a broker: no voting, and you
+          are trusting the issuer. Their price can fall as well as rise, like any stock.
+        </dd>
+      </dl>
     </div>
   </div>
 </section>
@@ -1267,7 +986,8 @@
 </main>
 
 <!-- ======================================================================
-     FOOTER
+     FOOTER — also home to the theme toggle and the refresh button, which
+     the frames deliberately keep out of the header.
      ====================================================================== -->
 <footer class="site-footer" id="site-footer">
   <div class="shell">
@@ -1281,10 +1001,29 @@
 
       <div class="stack">
         <div>
-          <p class="eyebrow">The rules</p>
+          <p class="micro">The rules</p>
           <p class="foot__disclaimer" style="margin-top:8px">Every round is published in full — snapshot hashes, swaps and transfers — so anyone can recompute what was sent and to whom.</p>
         </div>
         <p class="hint" id="footer-source">Source code is published at launch.</p>
+
+        <div class="foot__tools">
+          <button class="btn btn--sm" id="btn-refresh" type="button">
+            <svg class="btn__icon btn__icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2v3h-3"/>
+            </svg>
+            Refresh
+          </button>
+
+          <button class="btn btn--sm" id="theme-toggle" type="button" aria-label="Switch to light theme" aria-pressed="true">
+            <svg class="btn__icon btn__icon--sm" id="theme-icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true" hidden>
+              <circle cx="8" cy="8" r="3.2"/><path d="M8 .8v1.8M8 13.4v1.8M.8 8h1.8M13.4 8h1.8M2.9 2.9l1.3 1.3M11.8 11.8l1.3 1.3M13.1 2.9l-1.3 1.3M4.2 11.8l-1.3 1.3"/>
+            </svg>
+            <svg class="btn__icon btn__icon--sm" id="theme-icon-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+              <path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5 5.8 5.8 0 1 0 13.5 9.6z"/>
+            </svg>
+            Theme
+          </button>
+        </div>
       </div>
     </div>
 
@@ -1436,7 +1175,7 @@
 </dialog>
 
 <!-- ======================================================================
-     TOASTS
+     TOASTS — a dark pill, bottom centre
      ====================================================================== -->
 <div class="toasts" id="toast-region" role="status" aria-live="polite" aria-relevant="additions text"></div>
 
@@ -1455,54 +1194,47 @@
 </template>
 
 <template id="tpl-stock-row">
-  <tr class="stock-row" data-mint="" data-symbol="" data-clickable="true">
-    <td class="cell-rank num" data-label="Rank" data-cell="rank" data-field="rank"></td>
+  <tr class="stock-row" data-mint="" data-symbol="" data-clickable="true" data-picked="false">
+    <td data-label="" data-cell="select">
+      <button class="tick" type="button" role="checkbox" aria-checked="false"
+              data-action="toggle-pick" aria-label="Add to basket">
+        <svg class="tick__mark" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+          <path d="M3.5 8.4l3 3 6-6"/>
+        </svg>
+      </button>
+    </td>
     <td data-label="Ticker" data-cell="identity">
       <span class="cell-identity">
-        <span class="logo-slot" data-role="logo">
-          <span data-field="mono"></span>
-          <img class="logo-slot__img" data-field="logo" alt="" hidden>
-        </span>
         <button class="cell-identity__ticker linklike" type="button" data-action="open-stock"></button>
+        <span class="cell-identity__name" data-field="name"></span>
       </span>
     </td>
-    <td data-label="Company" data-cell="name"><span class="cell-identity__name" data-field="name"></span></td>
+    <td class="num" data-label="Rank" data-cell="rank"><span class="rank" data-field="rank"></span></td>
     <td class="num" data-label="Price" data-cell="price" data-field="price"></td>
     <td class="num" data-label="24h" data-cell="change"><span data-field="change" data-dir="flat"></span></td>
-    <td class="num" data-label="Mkt cap" data-cell="mcap" data-field="mcap"></td>
-    <td class="num" data-label="Liquidity" data-cell="liquidity" data-field="liquidity"></td>
-    <td data-label="7 day" data-cell="spark"><span class="spark" data-field="spark" data-dir="flat"><span class="spark__empty"></span></span></td>
-    <td data-label="" data-cell="action"><button class="btn btn--sm" type="button" data-action="add-stock">Add</button></td>
   </tr>
 </template>
 
 <template id="tpl-pick-row">
-  <li class="pick-row" data-mint="" data-symbol="">
-    <span class="logo-slot pick-row__logo" data-role="logo">
-      <span data-field="mono"></span>
-      <img class="logo-slot__img" data-field="logo" alt="" hidden>
+  <li class="pick" data-mint="" data-symbol="" style="--pct:20">
+    <span class="pick__top">
+      <span class="pick__id">
+        <span class="pick__ticker" data-field="symbol"></span>
+        <span class="pick__name" data-field="name"></span>
+      </span>
+      <span class="pick__pct mono" data-field="pctText">20%</span>
+      <button class="pick__remove" type="button" data-action="remove" aria-label="Remove from basket">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+      </button>
     </span>
-    <span class="pick-row__id">
-      <span class="pick-row__ticker" data-field="symbol"></span>
-      <span class="pick-row__name" data-field="name"></span>
-    </span>
-    <span class="alloc-bar pick-row__bar" aria-hidden="true"><span class="alloc-bar__fill" data-field="bar"></span></span>
-    <span class="stepper pick-row__step">
-      <button class="stepper__btn" type="button" data-action="dec" aria-label="Decrease allocation">−</button>
-      <input class="stepper__input" type="number" inputmode="numeric" min="10" max="60" step="5" value="20"
-             data-field="pct" aria-label="Allocation percent">
-      <span class="stepper__suffix" aria-hidden="true">%</span>
-      <button class="stepper__btn" type="button" data-action="inc" aria-label="Increase allocation">+</button>
-    </span>
-    <button class="btn btn--icon btn--sm pick-row__remove" type="button" data-action="remove" aria-label="Remove from basket">
-      <svg class="btn__icon btn__icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
-    </button>
+    <input class="pick__slider" type="range" min="10" max="60" step="5" value="20"
+           data-field="pct" aria-label="Allocation percent">
   </li>
 </template>
 
 <template id="tpl-picker-chip">
   <button class="chip" type="button" data-mint="" data-symbol="" data-action="add-stock">
-    <span class="logo-slot" data-role="logo" style="width:16px;height:16px;font-size:7px">
+    <span class="logo-slot logo-slot--xs" data-role="logo">
       <span data-field="mono"></span>
       <img class="logo-slot__img" data-field="logo" alt="" hidden>
     </span>
@@ -1510,42 +1242,28 @@
   </button>
 </template>
 
-<template id="tpl-legend-row">
-  <li class="legend__row" data-slice="0" data-mint="">
-    <span class="legend__swatch" aria-hidden="true"></span>
-    <span class="legend__label" data-field="symbol"></span>
-    <span class="legend__value" data-field="pct"></span>
-  </li>
-</template>
-
 <template id="tpl-demand-row">
   <li class="bar-row" data-mint="" data-symbol="">
     <span class="bar-row__label">
-      <span class="logo-slot" data-role="logo" style="width:16px;height:16px;font-size:7px">
-        <span data-field="mono"></span>
-        <img class="logo-slot__img" data-field="logo" alt="" hidden>
-      </span>
       <span data-field="symbol"></span>
+      <span class="bar-row__value" data-field="pct"></span>
     </span>
     <span class="bar-row__track"><span class="bar-row__fill" data-field="bar"></span></span>
-    <span class="bar-row__value" data-field="pct"></span>
   </li>
 </template>
 
-<template id="tpl-holding-row">
-  <tr data-mint="">
-    <td data-label="Stock" data-cell="identity">
-      <span class="cell-identity">
-        <span class="logo-slot" data-role="logo">
-          <span data-field="mono"></span>
-          <img class="logo-slot__img" data-field="logo" alt="" hidden>
-        </span>
-        <span class="cell-identity__ticker" data-field="symbol"></span>
-      </span>
-    </td>
-    <td class="num" data-label="Amount" data-field="amount"></td>
-    <td class="num" data-label="Mint"><span class="mono addr--trunc" data-field="mint"></span></td>
-  </tr>
+<template id="tpl-arrival-row">
+  <li class="arrival" data-mint="">
+    <span class="logo-slot logo-slot--lg" data-role="logo">
+      <span data-field="mono"></span>
+      <img class="logo-slot__img" data-field="logo" alt="" hidden>
+    </span>
+    <span class="arrival__id">
+      <span class="arrival__ticker" data-field="symbol"></span>
+      <span class="arrival__name" data-field="name"></span>
+    </span>
+    <span class="arrival__amount mono" data-field="amount"></span>
+  </li>
 </template>
 
 <template id="tpl-round-row">
@@ -1590,7 +1308,7 @@
           </dl>
 
           <div>
-            <p class="eyebrow">Swaps</p>
+            <p class="micro">Swaps</p>
             <div class="table-scroll">
               <table class="table" data-role="swaps">
                 <thead><tr>
@@ -1606,7 +1324,7 @@
           </div>
 
           <div>
-            <p class="eyebrow">Transfers</p>
+            <p class="micro">Transfers</p>
             <div class="table-scroll">
               <table class="table" data-role="transfers">
                 <thead><tr>
@@ -1656,19 +1374,19 @@
 
 <template id="tpl-toast">
   <div class="toast" data-kind="info" role="alert">
-    <svg class="toast__icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-      <circle cx="8" cy="8" r="6.4"/><path d="M8 5v3.6M8 11h.01"/>
+    <svg class="toast__icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+      <path d="M3.5 8.4l3 3 6-6"/>
     </svg>
     <div class="toast__body">
       <p class="toast__title" data-field="title"></p>
       <p class="toast__text" data-field="text"></p>
     </div>
-    <button class="btn btn--icon btn--sm toast__close" type="button" data-action="dismiss" aria-label="Dismiss">
-      <svg class="btn__icon btn__icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
-    </button>
     <div class="toast__actions" data-role="actions" hidden>
       <button class="btn btn--sm" type="button" data-action="retry">Retry</button>
     </div>
+    <button class="btn btn--icon btn--sm toast__close" type="button" data-action="dismiss" aria-label="Dismiss">
+      <svg class="btn__icon btn__icon--sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+    </button>
   </div>
 </template>
 

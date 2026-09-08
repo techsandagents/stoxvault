@@ -1,6 +1,6 @@
 /* ==========================================================================
-   STOXVAULT — shell, grid, section scaffolding, responsive rules
-   Breakpoints: 375 (base / small phone) → 768 (tablet) → 1280 (full desk)
+   STOXVAULT — shell, header, tab bar, panel layouts, responsive rules
+   Breakpoints: 375 (base / small phone) → 768 (tablet) → 1024 → 1280 (desk)
    Mobile-first: the base rules ARE the 375px layout.
    ========================================================================== */
 
@@ -13,95 +13,93 @@
 }
 .shell--flush { padding-inline: 0; }
 
-/* 12-column grid. Children opt in with .col-N (N of 12 at >=1280,
-   collapsing at the breakpoints below). */
-.grid {
-  display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: var(--s-3);
-}
-.col-3  { grid-column: span 12; }
-.col-4  { grid-column: span 12; }
-.col-5  { grid-column: span 12; }
-.col-6  { grid-column: span 12; }
-.col-7  { grid-column: span 12; }
-.col-8  { grid-column: span 12; }
-.col-9  { grid-column: span 12; }
-.col-12 { grid-column: span 12; }
-
-/* ---- header ------------------------------------------------------------- */
+/* ==========================================================================
+   Header — brand left · centred pill tab bar · tools right
+   ========================================================================== */
 .site-header {
   position: sticky;
   top: 0;
   z-index: var(--z-nav);
-  background: var(--surface);
-  border-bottom: var(--hairline) solid var(--rule);
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: saturate(140%) blur(10px);
+  -webkit-backdrop-filter: saturate(140%) blur(10px);
+  border-bottom: var(--hairline) solid var(--rule-soft);
 }
 .nav {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--s-2);
-  height: var(--nav-h);
+  min-height: var(--nav-h);
 }
 .nav__brand {
   display: inline-flex;
   align-items: center;
   gap: var(--s-1);
-  flex: 0 0 auto;
   color: var(--ink);
+  min-width: 0;
 }
-/* The mark is a raster PNG with a transparent ground and a soft glow baked in,
-   so it sits on both themes without a plate behind it. object-fit keeps it
-   undistorted if the box is ever changed. */
+/* The mark is a raster PNG with a transparent ground, so it sits on both
+   themes without a plate behind it. */
 .nav__logo {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   object-fit: contain;
   display: block;
   flex: 0 0 auto;
 }
 .nav__wordmark {
-  font-family: var(--font-mono);
-  font-size: 0.9375rem;
+  font-size: 1.0625rem;
   font-weight: var(--fw-bold);
-  letter-spacing: 0.04em;
+  letter-spacing: -0.015em;
+  white-space: nowrap;
 }
-.nav__links {
-  display: none;              /* hidden < 768, section nav lives in the page */
-  align-items: center;
-  gap: var(--s-2);
-  margin-left: var(--s-3);
+
+/* The tab bar is the only navigation. It is centred in the header on desk,
+   and becomes a horizontal scroller on a phone. */
+.tabbar-wrap {
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
 }
-.nav__link {
+.tabbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-05);
+  width: max-content;
+  margin-inline: auto;
+  padding: 3px;
+}
+.tabbar__tab {
+  flex: 0 0 auto;
+  padding: var(--s-1) var(--s-2);
+  border-radius: var(--radius-pill);
+  border: var(--hairline) solid transparent;
   font-size: var(--fs-sm);
-  /* Bolder and a step darker than before: at 13px in a dense header the old
-     regular weight on the muted ink read as disabled rather than clickable. */
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.005em;
+  color: var(--ink-3);
+  white-space: nowrap;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+              border-color var(--dur) var(--ease);
+}
+.tabbar__tab:hover { color: var(--ink-2); }
+.tabbar__tab[aria-selected="true"] {
+  background: var(--gold-wash);
+  border-color: var(--gold-line);
+  color: var(--gold-bright);
   font-weight: var(--fw-semi);
-  letter-spacing: 0.01em;
-  color: var(--ink-2);
-  padding: var(--s-05) 0;
-  border-bottom: 2px solid transparent;
-  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
-.nav__link:hover { color: var(--ink); }
-.nav__link[aria-current="true"] {
-  color: var(--ink);
-  border-bottom-color: var(--accent);
-}
-.nav__spacer { flex: 1 1 auto; }
+
 .nav__tools {
   display: flex;
   align-items: center;
   gap: var(--s-1);
-  flex: 0 0 auto;
+  justify-self: end;
 }
-/* The status pill is hidden on the narrowest phones. The selector is scoped to
-   .nav so it beats `.pill { display: inline-flex }` from components.css. */
-.nav .nav__status { display: none; }
 
-/* The contract-address button sits beside the connect button as its quieter
-   peer: the ticker in mono, an outline instead of the accent fill. */
+/* The contract-address button: the ticker in mono, an outline, no fill. */
 .nav__coin {
   gap: 6px;
   font-family: var(--font-mono);
@@ -111,95 +109,48 @@
 .nav__coin:hover:not(:disabled) { color: var(--ink); }
 .nav__coin-ticker { font-size: var(--fs-xs); font-weight: var(--fw-semi); }
 
-/* ---- ticker tape -------------------------------------------------------- */
-.tape {
-  position: sticky;
-  top: var(--nav-h);
-  z-index: var(--z-tape);
-  height: var(--tape-h);
-  background: var(--paper-sunk);
-  border-bottom: var(--hairline) solid var(--rule);
-  display: flex;
-  align-items: stretch;
-  overflow: hidden;
+/* ==========================================================================
+   Main + tab panels
+   ========================================================================== */
+.main {
+  padding-block: var(--s-3) var(--s-6);
 }
-.tape__viewport {
-  position: relative;
-  flex: 1 1 auto;
-  overflow: hidden;
-  min-width: 0;
-}
-.tape__control {
-  flex: 0 0 auto;
-  border-left: var(--hairline) solid var(--rule);
-}
-
-/* ---- sections ----------------------------------------------------------- */
-.section {
-  padding-block: var(--s-6);
-  border-top: var(--hairline) solid var(--rule);
-}
-.section:first-of-type { border-top: 0; }
-.section--tight { padding-block: var(--s-4); }
-.section__head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--s-1) var(--s-2);
-  margin-bottom: var(--s-3);
-}
-.section__title { font-size: var(--fs-h2); }
-.section__note {
-  font-size: var(--fs-sm);
-  color: var(--ink-3);
-  flex: 1 1 260px;
-  min-width: 0;
-}
-.section__actions {
-  display: flex;
-  align-items: center;
-  gap: var(--s-1);
-  flex: 0 0 auto;
-}
-
-/* ---- hero --------------------------------------------------------------- */
-.hero { padding-block: var(--s-5) var(--s-5); }
-.hero__title {
-  font-size: clamp(1.75rem, 7vw, var(--fs-display));
-  max-width: 20ch;
-}
-.hero__sub { margin-top: var(--s-2); }
-.hero__meta {
-  margin-top: var(--s-3);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--s-1) var(--s-2);
-}
-.hero__stats {
-  margin-top: var(--s-4);
+.view {
   display: grid;
-  grid-template-columns: 1fr;
-  border: var(--hairline) solid var(--rule);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  overflow: hidden;
+  gap: var(--s-3);
+  align-content: start;
 }
+.view:focus-visible { outline-offset: 4px; }
 
-/* ---- basket configurator ------------------------------------------------ */
-.basket {
+.view__head {
+  display: grid;
+  gap: var(--s-1);
+}
+.idstrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1) var(--s-15);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+.idstrip__name { color: var(--ink-2); }
+.idstrip__sep  { color: var(--ink-4); }
+.idstrip__sym  { color: var(--ink-3); }
+
+/* ---- overview: two cards across, stacking on a phone -------------------- */
+.cards {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--s-3);
+  gap: var(--s-2);
   align-items: start;
 }
-.basket__side { display: grid; gap: var(--s-3); }
 
-/* ---- vault -------------------------------------------------------------- */
-.vault {
+/* ---- two-column panels (basket, demand, rounds) ------------------------- */
+.split {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--s-3);
+  gap: var(--s-2);
   align-items: start;
 }
 
@@ -212,14 +163,13 @@
   border-radius: var(--radius-lg);
   background: var(--surface);
   overflow: hidden;
-  counter-reset: step;
 }
 
 /* ---- footer ------------------------------------------------------------- */
 .site-footer {
   border-top: var(--hairline) solid var(--rule);
-  background: var(--surface);
-  padding-block: var(--s-5) var(--s-6);
+  background: var(--paper-sunk);
+  padding-block: var(--s-5) var(--s-5);
   margin-top: var(--s-6);
 }
 .foot {
@@ -232,6 +182,11 @@
   font-size: var(--fs-sm);
   color: var(--ink-3);
   line-height: 1.5;
+}
+.foot__tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
 }
 .foot__bottom {
   margin-top: var(--s-4);
@@ -249,30 +204,25 @@
    >= 768px — tablet
    ========================================================================== */
 @media (min-width: 768px) {
-  :root { --gutter: var(--s-4); }
+  :root { --gutter: var(--s-3); }
 
-  .nav .nav__status { display: inline-flex; }
+  .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
-  .col-6 { grid-column: span 6; }
-  .col-8 { grid-column: span 12; }
-  .col-4 { grid-column: span 6; }
-  .col-3 { grid-column: span 6; }
+  .split { grid-template-columns: minmax(0, 1.35fr) minmax(300px, 1fr); gap: var(--s-3); }
+  .split--even   { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .split--ledger { grid-template-columns: minmax(0, 1.8fr) minmax(280px, 1fr); }
 
-  .hero__stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-
-  .basket { grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); }
-  .vault  { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); }
-  .steps  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-
-  .foot { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+  .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .foot  { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
 }
 
 /* ==========================================================================
-   >= 1024px — the nav gets its links back
+   >= 1024px — the overview keeps its two cards side by side
+   The vault card was removed at the founder's request, so this is a pair, not
+   a three-across grid with a hole in it: equal halves, full width.
    ========================================================================== */
 @media (min-width: 1024px) {
-  .nav__links { display: flex; }
-  .hero__stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); }
   .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
@@ -280,43 +230,37 @@
    >= 1280px — full desk
    ========================================================================== */
 @media (min-width: 1280px) {
-  .col-3  { grid-column: span 3; }
-  .col-4  { grid-column: span 4; }
-  .col-5  { grid-column: span 5; }
-  .col-6  { grid-column: span 6; }
-  .col-7  { grid-column: span 7; }
-  .col-8  { grid-column: span 8; }
-  .col-9  { grid-column: span 9; }
-
-  .section { padding-block: var(--s-8); }
-  .hero { padding-block: var(--s-8) var(--s-6); }
-  .hero__title { font-size: var(--fs-display); }
-
-  .basket { grid-template-columns: minmax(0, 1fr) 380px; gap: var(--s-4); }
-  .vault  { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: var(--s-4); }
+  :root { --gutter: var(--s-4); }
+  .main { padding-block: var(--s-4) var(--s-8); }
+  .view { gap: var(--s-4); }
+  .cards, .split { gap: var(--s-3); }
 }
 
 /* ==========================================================================
    <= 767px — table→cards, dense-mode trims
-   The Top-20 and holdings tables carry .table--cards in the markup; the
-   transformation is pure CSS and needs no JS.
+   The stock picker, holdings and rounds tables carry .table--cards in the
+   markup; the transformation is pure CSS and needs no JS.
    ========================================================================== */
 @media (max-width: 767px) {
-  /* Nav has to fit brand + two icon buttons + connect inside 375px. */
-  .nav { gap: var(--s-05); }
-  .nav__wordmark { font-size: 0.875rem; }
+  .nav {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "brand tools"
+      "tabs  tabs";
+    row-gap: var(--s-1);
+    padding-block: var(--s-1);
+  }
+  .nav__brand  { grid-area: brand; }
+  .nav__tools  { grid-area: tools; }
+  .tabbar-wrap { grid-area: tabs; }
+  .tabbar { margin-inline: 0; padding-inline: 0; }
+
+  .nav__wordmark { font-size: 0.9375rem; }
   .nav__tools .btn { height: 30px; }
   .nav__tools .btn--icon { width: 30px; }
   .nav__tools #btn-connect { padding-inline: var(--s-15); font-size: var(--fs-xs); }
-  /* Brand mark + ticker + two icons + connect have to share 375px, so the
-     wordmark stands down (the logo still carries the brand and the <a> keeps
-     its accessible name) and the ticker drops its copy glyph. */
-  .nav__wordmark { display: none; }
-  .nav__tools .nav__coin { padding-inline: var(--s-1); }
   .nav__coin .btn__icon { display: none; }
-
-  .section { padding-block: var(--s-5); }
-  .section__head { margin-bottom: var(--s-2); }
+  .nav__tools .nav__coin { padding-inline: var(--s-1); }
 
   /* Selectors are doubled (.table.table--cards) so they outrank the plain
      .table rules in components.css, which is loaded after this file. */
@@ -334,13 +278,14 @@
   .table.table--cards .pane-as-tbody { --pane-display: block; }
 
   .table.table--cards tbody tr {
+    position: relative;
     border: var(--hairline) solid var(--rule);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
+    border-radius: var(--radius);
+    background: var(--surface-2);
     padding: var(--s-15);
     margin-bottom: var(--s-1);
   }
-  .table.table--cards tbody tr:hover { background: var(--surface); }
+  .table.table--cards tbody tr:hover { background: var(--surface-2); }
 
   .table.table--cards tbody td {
     display: flex;
@@ -373,10 +318,16 @@
   }
   .table.table--cards tbody td[data-cell="identity"]::before { content: none; }
 
-  .table.table--cards tbody td[data-cell="spark"] { padding-top: var(--s-1); }
-  .table.table--cards tbody td[data-cell="spark"] .spark { width: 100%; }
+  /* The tick sits in the card's top-right corner instead of its own row. */
+  .table.table--cards tbody td[data-cell="select"] {
+    position: absolute;
+    top: var(--s-15);
+    right: var(--s-15);
+    padding: 0;
+    width: auto;
+  }
+  .table.table--cards tbody td[data-cell="identity"] { padding-right: 34px; }
 
-  /* Expand affordance sits inline on cards. */
   .table.table--cards tbody td[data-cell="expand"] { justify-content: flex-end; }
 
   /* Skeleton rows keep the card silhouette. */

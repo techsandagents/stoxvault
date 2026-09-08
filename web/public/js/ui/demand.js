@@ -10,7 +10,7 @@
  * each wallet counts for what it held at the snapshot (`holding-weighted`).
  */
 
-import { fmtShare, monogram, DASH } from '../format.js';
+import { fmtShare, DASH } from '../format.js';
 
 const NOTE = {
   'equal-weight':
@@ -29,35 +29,29 @@ export function createDemand({ onRetry } = {}) {
   const tpl = document.getElementById('tpl-demand-row');
 
   if (!panel || !bars || !tpl) {
-    return { render() {}, setError() {}, setLoading() {}, setMine() {} };
+    return { render() {}, setError() {}, setLoading() {}, setMine() {}, setVisible() {} };
   }
 
   if (retryBtn && typeof onRetry === 'function') retryBtn.addEventListener('click', () => onRetry());
 
   let mine = new Set();
   let lastRows = [];
+  // The bars are only ever built for a panel someone has opened, and only when
+  // the data behind them actually changed — switching tab repaints nothing.
+  let visible = false;
+  let dirty = false;
 
-  function row(entry, max, stock) {
+  function row(entry, max) {
     const node = tpl.content.firstElementChild.cloneNode(true);
     node.dataset.mint = entry.mint || '';
     node.dataset.symbol = entry.symbol || '';
 
     node.querySelector('[data-field="symbol"]').textContent = entry.symbol || DASH;
 
-    const mono = node.querySelector('[data-field="mono"]');
-    const img = node.querySelector('[data-field="logo"]');
-    if (mono) mono.textContent = monogram(entry.symbol);
-    if (img && stock?.logo) {
-      img.src = stock.logo;
-      img.alt = '';
-      img.hidden = false;
-      img.addEventListener('error', () => {
-        img.hidden = true;
-      });
-    }
-
     const pct = Number(entry.pct) || 0;
     const bar = node.querySelector('[data-field="bar"]');
+    // Drawn against the largest share so the chart uses the full width; the
+    // number beside it is always the true share.
     if (bar) bar.style.width = `${max > 0 ? Math.max(1.5, (pct / max) * 100) : 0}%`;
 
     node.querySelector('[data-field="pct"]').textContent = fmtShare(pct);
@@ -67,6 +61,12 @@ export function createDemand({ onRetry } = {}) {
   }
 
   function paint() {
+    if (!visible) {
+      dirty = true;
+      return;
+    }
+    dirty = false;
+
     if (lastRows.length === 0) {
       bars.replaceChildren();
       panel.dataset.state = 'empty';
@@ -74,7 +74,7 @@ export function createDemand({ onRetry } = {}) {
     }
     const max = lastRows.reduce((acc, r) => Math.max(acc, Number(r.pct) || 0), 0);
     const frag = document.createDocumentFragment();
-    for (const entry of lastRows) frag.appendChild(row(entry, max, entry.__stock));
+    for (const entry of lastRows) frag.appendChild(row(entry, max));
     bars.replaceChildren(frag);
     panel.dataset.state = 'ready';
   }
@@ -84,12 +84,9 @@ export function createDemand({ onRetry } = {}) {
      * @param {{demand: {symbol, mint, pct}[], demandBasis: string, demandContributors?: number}} stats
      * @param {Map<string, object>} [stockIndex] mint -> stock, for the logos
      */
-    render(stats, stockIndex = null) {
+    render(stats) {
       const rows = Array.isArray(stats?.demand) ? stats.demand.filter((d) => Number(d?.pct) > 0) : [];
-      lastRows = rows
-        .slice()
-        .sort((a, b) => (Number(b.pct) || 0) - (Number(a.pct) || 0))
-        .map((d) => ({ ...d, __stock: stockIndex ? stockIndex.get(d.mint) || null : null }));
+      lastRows = rows.slice().sort((a, b) => (Number(b.pct) || 0) - (Number(a.pct) || 0));
 
       const basis = stats?.demandBasis === 'holding-weighted' ? 'holding-weighted' : 'equal-weight';
       if (basisEl) {
@@ -111,8 +108,18 @@ export function createDemand({ onRetry } = {}) {
 
     /** Highlight the connected wallet's own picks. */
     setMine(mints) {
-      mine = new Set(Array.isArray(mints) ? mints.filter(Boolean) : []);
-      if (panel.dataset.state === 'ready') paint();
+      const next = new Set(Array.isArray(mints) ? mints.filter(Boolean) : []);
+      const same = next.size === mine.size && [...next].every((m) => mine.has(m));
+      mine = next;
+      if (same) return; // the same basket: nothing on screen would change
+      if (lastRows.length > 0) paint();
+    },
+
+    /** The Demand panel was opened (or left). Build on the way in, once. */
+    setVisible(next) {
+      const was = visible;
+      visible = Boolean(next);
+      if (visible && (!was || dirty)) paint();
     },
 
     setLoading() {
@@ -122,6 +129,7 @@ export function createDemand({ onRetry } = {}) {
     setError(message) {
       if (errorText && message) errorText.textContent = message;
       panel.dataset.state = 'error';
+      dirty = false;
     },
   };
 }

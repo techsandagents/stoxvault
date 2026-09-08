@@ -1,72 +1,101 @@
 /* ==========================================================================
    STOXVAULT — design tokens
-   Light is the primary theme. Every colour is defined once on bare :root,
-   then redefined (same names, different values) in two dark blocks:
-     1. @media (prefers-color-scheme: dark) guarded with :root:not([data-theme="light"])
-     2. :root[data-theme="dark"]                 so an explicit toggle wins both ways
+
+   DARK IS THE DEFAULT. Every colour is defined once on bare :root (the warm
+   near-black scheme from the design frames), then redefined — same names,
+   different values — in two light blocks:
+     1. @media (prefers-color-scheme: light) guarded with :root:not([data-theme="dark"])
+     2. :root[data-theme="light"]            so an explicit toggle wins both ways
+
+   There is ONE accent: gold. Bright gold for numerals and the active tab,
+   mid gold for fills and bars, deep gold for the primary button. Green and
+   red appear ONLY on price changes and gains — never in the chrome.
+
    Nothing outside this file may hardcode a hex value.
    ========================================================================== */
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 
-  /* ---- surfaces & ink (light) ------------------------------------------ */
-  --paper:        #F4F5F7;   /* page background */
-  --paper-sunk:   #EDEFF2;   /* recessed strips: tape, table head, callouts */
-  --surface:      #FFFFFF;   /* panels */
-  --surface-2:    #FAFBFC;   /* nested panels, zebra rows */
-  --surface-3:    #F0F2F5;   /* hover on rows, chips */
-  --overlay:      rgba(11, 13, 16, 0.44);
+  /* ---- surfaces & ink (dark, the default) ------------------------------ */
+  --paper:        #0A0908;   /* warm near-black page ground */
+  --paper-sunk:   #060505;   /* recessed strips: tape, table head */
+  --surface:      #100F0D;   /* cards, one shade above the page */
+  --surface-2:    #141311;   /* nested blocks, zebra rows */
+  --surface-3:    #1B1917;   /* hover on rows, chips */
+  --overlay:      rgba(0, 0, 0, 0.72);
 
-  --ink:          #0B0D10;   /* primary text */
-  --ink-2:        #3D4450;   /* secondary text */
-  --ink-3:        #667080;   /* labels, captions (AA on paper) */
-  --ink-4:        #98A1AE;   /* disabled, decorative only */
-  --ink-invert:   #F7F8FA;
+  /* The very subtle lighter wash at the top of the page, and the equally
+     subtle top-left lift inside every card. Both are gold at 2–4%. */
+  --page-wash:    radial-gradient(120% 62% at 50% -14%,
+                    rgba(227, 185, 79, 0.075) 0%,
+                    rgba(227, 185, 79, 0.022) 42%,
+                    transparent 72%);
+  --card-wash:    linear-gradient(158deg,
+                    rgba(255, 245, 220, 0.035) 0%,
+                    rgba(255, 245, 220, 0.008) 38%,
+                    transparent 70%);
+
+  --ink:          #F3F0E9;   /* primary text */
+  --ink-2:        #BAB4A8;   /* secondary text */
+  --ink-3:        #8B857A;   /* labels, captions */
+  --ink-4:        #5F5A51;   /* disabled, decorative only */
+  --ink-invert:   #0A0908;
 
   /* ---- hairlines (no shadows anywhere) --------------------------------- */
-  --rule:         rgba(11, 13, 16, 0.10);
-  --rule-soft:    rgba(11, 13, 16, 0.06);
-  --rule-strong:  rgba(11, 13, 16, 0.20);
+  --rule:         rgba(255, 255, 255, 0.06);
+  --rule-soft:    rgba(255, 255, 255, 0.035);
+  --rule-strong:  rgba(255, 255, 255, 0.14);
 
-  /* ---- accent: Solana green. <=5% of pixels. Fills and dots, not text. -- */
-  --accent:       #14F195;
-  --accent-hover: #0FD886;
-  --accent-press: #0BBE75;
-  --accent-ink:   #06231A;   /* text placed on top of --accent */
-  --accent-wash:  rgba(20, 241, 149, 0.14);
-  --accent-line:  rgba(20, 241, 149, 0.42);
-  --accent-text:  #0A7A55;   /* readable green text on light paper */
+  /* ---- the gold ramp — the only accent --------------------------------- */
+  --gold-bright:  #F5D77E;   /* numerals, the active tab, the big figures */
+  --gold:         #E3B94F;   /* bar fills, rings, checkbox ticks */
+  --gold-deep:    #C08F22;   /* the bottom of the primary button */
+  --gold-label:   #A98C4A;   /* micro-labels: muted gold, still legible */
+  --gold-wash:    rgba(227, 185, 79, 0.10);
+  --gold-wash-2:  rgba(227, 185, 79, 0.16);
+  --gold-line:    rgba(227, 185, 79, 0.32);
 
-  /* ---- Solana purple: wallet badge only -------------------------------- */
-  --purple:       #9945FF;
-  --purple-wash:  rgba(153, 69, 255, 0.12);
-  --purple-text:  #6D28C9;
+  /* Legacy accent names — every rule that used to paint Solana green now
+     paints gold, so nothing that was not rewritten breaks. */
+  --accent:       var(--gold);
+  --accent-hover: #EFC964;
+  --accent-press: var(--gold-deep);
+  --accent-ink:   #17130A;   /* near-black text on a gold fill */
+  --accent-wash:  var(--gold-wash);
+  --accent-line:  var(--gold-line);
+  --accent-text:  var(--gold-bright);
 
-  /* ---- market direction (classic finance, not the accent) -------------- */
-  --up:           #0E9F6E;
-  --up-wash:      rgba(14, 159, 110, 0.10);
-  --down:         #D83A3A;
-  --down-wash:    rgba(216, 58, 58, 0.10);
+  /* ---- wallet badge (was purple; the frames use a neutral dark pill) ---- */
+  --purple:       var(--gold);
+  --purple-wash:  rgba(255, 255, 255, 0.04);
+  --purple-text:  var(--ink-2);
+  --wallet-dot:   #35D68A;   /* the small green connection dot */
+
+  /* ---- market direction — the ONLY green and red on the page ----------- */
+  --up:           #3FD08A;
+  --up-wash:      rgba(63, 208, 138, 0.12);
+  --down:         #F0605C;
+  --down-wash:    rgba(240, 96, 92, 0.12);
   --flat:         var(--ink-3);
 
   /* ---- status ---------------------------------------------------------- */
-  --warn:         #A96A00;
-  --warn-wash:    rgba(169, 106, 0, 0.10);
-  --info:         #1F5FBF;
-  --info-wash:    rgba(31, 95, 191, 0.10);
-  --sim:          #6B4EC4;   /* "simulated" labelling */
-  --sim-wash:     rgba(107, 78, 196, 0.10);
+  --warn:         #E0A64B;
+  --warn-wash:    rgba(224, 166, 75, 0.12);
+  --info:         #93A6BC;
+  --info-wash:    rgba(147, 166, 188, 0.10);
+  --sim:          #D8B26A;   /* "simulated" labelling */
+  --sim-wash:     rgba(216, 178, 106, 0.12);
 
   /* ---- focus ----------------------------------------------------------- */
-  --focus-ring:   #0B0D10;
-  --focus-halo:   rgba(20, 241, 149, 0.55);
+  --focus-ring:   var(--gold-bright);
+  --focus-halo:   rgba(245, 215, 126, 0.35);
 
   /* ---- skeleton -------------------------------------------------------- */
-  --skel:         rgba(11, 13, 16, 0.07);
+  --skel:         rgba(255, 255, 255, 0.055);
 
   /* ---- chart ink ------------------------------------------------------- */
-  --chart-grid:   rgba(11, 13, 16, 0.07);
+  --chart-grid:   rgba(255, 255, 255, 0.06);
   --chart-axis:   var(--ink-3);
   --chart-up:     var(--up);
   --chart-down:   var(--down);
@@ -78,20 +107,23 @@
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono",
                "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
 
-  --fs-display: 2.5rem;    /* 40px — one display size only */
+  --fs-display: 2.5rem;    /* 40px */
   --fs-h2:      1.25rem;   /* 20px */
-  --fs-h3:      0.9375rem; /* 15px */
+  --fs-h3:      1.0625rem; /* 17px — card titles */
   --fs-body:    0.90625rem;/* 14.5px */
   --fs-sm:      0.8125rem; /* 13px — table body */
-  --fs-xs:      0.6875rem; /* 11px — eyebrow labels */
-  --fs-stat:    1.75rem;   /* 28px — hero stat numerals */
-  --fs-addr:    1.0625rem; /* 17px — vault address */
+  --fs-xs:      0.6875rem; /* 11px — micro labels */
+  --fs-stat:    1.75rem;   /* 28px */
+  --fs-addr:    1.0625rem; /* 17px */
+  /* The two big mono figures: the vault balance and the countdown. */
+  --fs-numeral: clamp(2.5rem, 6.2vw, 3.4rem);
+  --fs-numeral-sm: clamp(2rem, 5vw, 2.6rem);
 
   --lh-tight:   1.15;
   --lh-snug:    1.35;
   --lh-body:    1.55;
 
-  --ls-eyebrow: 0.09em;
+  --ls-eyebrow: 0.11em;
   --ls-tight:   -0.015em;
 
   --fw-regular: 400;
@@ -114,15 +146,15 @@
   --s-12: 96px;
 
   /* ---- geometry -------------------------------------------------------- */
-  --radius-sm: 3px;
-  --radius:    5px;
-  --radius-lg: 8px;
+  --radius-sm: 6px;
+  --radius:    10px;
+  --radius-lg: 14px;    /* cards */
   --radius-pill: 999px;
   --hairline: 1px;
 
-  --shell-max: 1280px;
-  --gutter:    var(--s-2);   /* 16 on phones, widened at the breakpoints */
-  --nav-h:     56px;
+  --shell-max: 1360px;
+  --gutter:    var(--s-2);
+  --nav-h:     68px;
   --tape-h:    38px;
 
   /* ---- motion ---------------------------------------------------------- */
@@ -132,115 +164,147 @@
   --ease:     cubic-bezier(0.22, 0.61, 0.36, 1);
   --tape-speed: 64s;
 
-  /* ---- z-index ---------------------------------------------------------- */
+  /* ---- z-index --------------------------------------------------------- */
   --z-tape:    20;
   --z-nav:     30;
   --z-drawer:  60;
   --z-toast:   80;
 }
 
-/* ---- dark: system preference (an explicit light choice wins) ------------ */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
+/* ==========================================================================
+   LIGHT — system preference (an explicit dark choice wins)
+   ========================================================================== */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
 
-    --paper:        #0B0D10;
-    --paper-sunk:   #07090B;
-    --surface:      #111418;
-    --surface-2:    #161A1F;
-    --surface-3:    #1D2228;
-    --overlay:      rgba(0, 0, 0, 0.66);
+    --paper:        #F4F5F7;
+    --paper-sunk:   #EDEFF2;
+    --surface:      #FFFFFF;
+    --surface-2:    #FAFBFC;
+    --surface-3:    #F0F2F5;
+    --overlay:      rgba(11, 13, 16, 0.44);
 
-    --ink:          #E8EBEF;
-    --ink-2:        #B3BAC4;
-    --ink-3:        #8B94A0;
-    --ink-4:        #5E6773;
-    --ink-invert:   #0B0D10;
+    --page-wash:    radial-gradient(120% 62% at 50% -14%,
+                      rgba(192, 143, 34, 0.07) 0%,
+                      rgba(192, 143, 34, 0.02) 42%,
+                      transparent 72%);
+    --card-wash:    linear-gradient(158deg,
+                      rgba(11, 13, 16, 0.018) 0%,
+                      transparent 55%);
 
-    --rule:         rgba(255, 255, 255, 0.11);
-    --rule-soft:    rgba(255, 255, 255, 0.06);
-    --rule-strong:  rgba(255, 255, 255, 0.22);
+    --ink:          #0B0D10;
+    --ink-2:        #3D4450;
+    --ink-3:        #667080;
+    --ink-4:        #98A1AE;
+    --ink-invert:   #F7F8FA;
 
-    --accent-hover: #2BF5A3;
-    --accent-press: #12D384;
-    --accent-wash:  rgba(20, 241, 149, 0.12);
-    --accent-line:  rgba(20, 241, 149, 0.38);
-    --accent-text:  #35E3A0;
+    --rule:         rgba(11, 13, 16, 0.10);
+    --rule-soft:    rgba(11, 13, 16, 0.06);
+    --rule-strong:  rgba(11, 13, 16, 0.20);
 
-    --purple-wash:  rgba(153, 69, 255, 0.18);
-    --purple-text:  #C08BFF;
+    --gold-bright:  #8A6812;
+    --gold:         #C08F22;
+    --gold-deep:    #9A7317;
+    --gold-label:   #8A6812;
+    --gold-wash:    rgba(192, 143, 34, 0.12);
+    --gold-wash-2:  rgba(192, 143, 34, 0.20);
+    --gold-line:    rgba(192, 143, 34, 0.40);
 
-    --up:           #21C08A;
-    --up-wash:      rgba(33, 192, 138, 0.12);
-    --down:         #F0605C;
-    --down-wash:    rgba(240, 96, 92, 0.12);
+    --accent-hover: #D2A035;
+    --accent-ink:   #1B1405;
 
-    --warn:         #E0A64B;
-    --warn-wash:    rgba(224, 166, 75, 0.12);
-    --info:         #6FA8F5;
-    --info-wash:    rgba(111, 168, 245, 0.12);
-    --sim:          #A48BF0;
-    --sim-wash:     rgba(164, 139, 240, 0.14);
+    --purple-wash:  rgba(11, 13, 16, 0.05);
+    --purple-text:  var(--ink-2);
+    --wallet-dot:   #0E9F6E;
 
-    --focus-ring:   #FFFFFF;
+    --up:           #0E9F6E;
+    --up-wash:      rgba(14, 159, 110, 0.10);
+    --down:         #D83A3A;
+    --down-wash:    rgba(216, 58, 58, 0.10);
 
-    --skel:         rgba(255, 255, 255, 0.07);
+    --warn:         #A96A00;
+    --warn-wash:    rgba(169, 106, 0, 0.10);
+    --info:         #4A6076;
+    --info-wash:    rgba(74, 96, 118, 0.10);
+    --sim:          #8A6812;
+    --sim-wash:     rgba(192, 143, 34, 0.12);
 
-    --chart-grid:   rgba(255, 255, 255, 0.08);
-    --chart-line:   var(--ink);
+    --focus-ring:   #0B0D10;
+    --focus-halo:   rgba(192, 143, 34, 0.45);
+
+    --skel:         rgba(11, 13, 16, 0.07);
+
+    --chart-grid:   rgba(11, 13, 16, 0.07);
   }
 }
 
-/* ---- dark: explicit toggle (wins over a light system preference) -------- */
-:root[data-theme="dark"] {
-  color-scheme: dark;
+/* ==========================================================================
+   LIGHT — explicit toggle (wins over a dark system preference)
+   ========================================================================== */
+:root[data-theme="light"] {
+  color-scheme: light;
 
-  --paper:        #0B0D10;
-  --paper-sunk:   #07090B;
-  --surface:      #111418;
-  --surface-2:    #161A1F;
-  --surface-3:    #1D2228;
-  --overlay:      rgba(0, 0, 0, 0.66);
+  --paper:        #F4F5F7;
+  --paper-sunk:   #EDEFF2;
+  --surface:      #FFFFFF;
+  --surface-2:    #FAFBFC;
+  --surface-3:    #F0F2F5;
+  --overlay:      rgba(11, 13, 16, 0.44);
 
-  --ink:          #E8EBEF;
-  --ink-2:        #B3BAC4;
-  --ink-3:        #8B94A0;
-  --ink-4:        #5E6773;
-  --ink-invert:   #0B0D10;
+  --page-wash:    radial-gradient(120% 62% at 50% -14%,
+                    rgba(192, 143, 34, 0.07) 0%,
+                    rgba(192, 143, 34, 0.02) 42%,
+                    transparent 72%);
+  --card-wash:    linear-gradient(158deg,
+                    rgba(11, 13, 16, 0.018) 0%,
+                    transparent 55%);
 
-  --rule:         rgba(255, 255, 255, 0.11);
-  --rule-soft:    rgba(255, 255, 255, 0.06);
-  --rule-strong:  rgba(255, 255, 255, 0.22);
+  --ink:          #0B0D10;
+  --ink-2:        #3D4450;
+  --ink-3:        #667080;
+  --ink-4:        #98A1AE;
+  --ink-invert:   #F7F8FA;
 
-  --accent-hover: #2BF5A3;
-  --accent-press: #12D384;
-  --accent-wash:  rgba(20, 241, 149, 0.12);
-  --accent-line:  rgba(20, 241, 149, 0.38);
-  --accent-text:  #35E3A0;
+  --rule:         rgba(11, 13, 16, 0.10);
+  --rule-soft:    rgba(11, 13, 16, 0.06);
+  --rule-strong:  rgba(11, 13, 16, 0.20);
 
-  --purple-wash:  rgba(153, 69, 255, 0.18);
-  --purple-text:  #C08BFF;
+  --gold-bright:  #8A6812;
+  --gold:         #C08F22;
+  --gold-deep:    #9A7317;
+  --gold-label:   #8A6812;
+  --gold-wash:    rgba(192, 143, 34, 0.12);
+  --gold-wash-2:  rgba(192, 143, 34, 0.20);
+  --gold-line:    rgba(192, 143, 34, 0.40);
 
-  --up:           #21C08A;
-  --up-wash:      rgba(33, 192, 138, 0.12);
-  --down:         #F0605C;
-  --down-wash:    rgba(240, 96, 92, 0.12);
+  --accent-hover: #D2A035;
+  --accent-ink:   #1B1405;
 
-  --warn:         #E0A64B;
-  --warn-wash:    rgba(224, 166, 75, 0.12);
-  --info:         #6FA8F5;
-  --info-wash:    rgba(111, 168, 245, 0.12);
-  --sim:          #A48BF0;
-  --sim-wash:     rgba(164, 139, 240, 0.14);
+  --purple-wash:  rgba(11, 13, 16, 0.05);
+  --purple-text:  var(--ink-2);
+  --wallet-dot:   #0E9F6E;
 
-  --focus-ring:   #FFFFFF;
+  --up:           #0E9F6E;
+  --up-wash:      rgba(14, 159, 110, 0.10);
+  --down:         #D83A3A;
+  --down-wash:    rgba(216, 58, 58, 0.10);
 
-  --skel:         rgba(255, 255, 255, 0.07);
+  --warn:         #A96A00;
+  --warn-wash:    rgba(169, 106, 0, 0.10);
+  --info:         #4A6076;
+  --info-wash:    rgba(74, 96, 118, 0.10);
+  --sim:          #8A6812;
+  --sim-wash:     rgba(192, 143, 34, 0.12);
 
-  --chart-grid:   rgba(255, 255, 255, 0.08);
-  --chart-line:   var(--ink);
+  --focus-ring:   #0B0D10;
+  --focus-halo:   rgba(192, 143, 34, 0.45);
+
+  --skel:         rgba(11, 13, 16, 0.07);
+
+  --chart-grid:   rgba(11, 13, 16, 0.07);
 }
 
-/* Explicit light choice while the system is dark: bare :root already holds
-   the light values, so only color-scheme needs restating. */
-:root[data-theme="light"] { color-scheme: light; }
+/* Explicit dark choice while the system is light: bare :root already holds the
+   dark values, so only color-scheme needs restating. */
+:root[data-theme="dark"] { color-scheme: dark; }

@@ -20,18 +20,35 @@ export function createTape({ onRetry } = {}) {
   const tpl = document.getElementById('tpl-tape-item');
 
   if (!root || !viewport || !track || !tpl) {
-    return { render() {}, setError() {}, setLoading() {}, destroy() {} };
+    return { render() {}, setError() {}, setLoading() {}, setPaused() {}, setVisible() {}, destroy() {} };
   }
 
-  let paused = false;
+  let paused = false; // what the user asked for
+  let visible = true; // whether the Overview panel is on screen
 
-  function setPaused(next) {
-    paused = Boolean(next);
-    root.dataset.paused = paused ? 'true' : 'false';
+  /**
+   * The marquee runs only when the user has not paused it AND the panel it
+   * lives in is actually visible. A CSS animation in a `hidden` panel still
+   * burns a compositor thread, so the offscreen case is a pause too — but it is
+   * kept apart from the button's own state, so coming back to the tab does not
+   * silently un-press a button the user pressed.
+   */
+  function sync() {
+    root.dataset.paused = paused || !visible ? 'true' : 'false';
     if (pauseBtn) {
       pauseBtn.setAttribute('aria-pressed', paused ? 'true' : 'false');
       pauseBtn.setAttribute('aria-label', paused ? 'Resume the price tape' : 'Pause the price tape');
     }
+  }
+
+  function setPaused(next) {
+    paused = Boolean(next);
+    sync();
+  }
+
+  function setVisible(next) {
+    visible = Boolean(next);
+    sync();
   }
 
   if (pauseBtn) pauseBtn.addEventListener('click', () => setPaused(!paused));
@@ -88,6 +105,7 @@ export function createTape({ onRetry } = {}) {
     },
 
     setPaused,
+    setVisible,
 
     get paused() {
       return paused;
