@@ -18,7 +18,7 @@ send it to the browser, never write it anywhere else.
 stockdrop/
   SPEC.md  CONTRACT.md  README.md  .env.example  .gitignore
   server/                      Node 20, ESM, Express. Deploys to Railway. API + keeper in ONE process.
-    package.json               pre-created. deps: @solana/web3.js 1.98, @solana/spl-token 0.4, express, cors, pg
+    package.json               deps: @solana/web3.js 1.98, @solana/spl-token 0.4, @noble/curves 1.9.7, express, cors, pg
     railway.json
     .env                       local secrets (gitignored)
     data/xstocks.seed.json     snapshot of all 100 xStocks with Yahoo symbol mapping (seed / offline fallback)
@@ -33,7 +33,7 @@ stockdrop/
     src/services/universe.js   ranks top-20 from Jupiter, caches, refreshes hourly
     src/services/history.js    candles from Yahoo (cache 1h), fallback CoinGecko
     src/services/holders.js    holder snapshot via RPC (Helius getTokenAccounts when key present, else getProgramAccounts)
-    src/services/session.js    nonce + HMAC session tokens + ed25519 signature verification (node:crypto)
+    src/services/session.js    nonce + HMAC session tokens + EIP-191 secp256k1 verification (@noble/curves)
     src/engine/                PURE functions, no IO, bigint math: ranking.js, validate.js, allocate.js, round.js
     src/chain/                 rpc.js, jupiter.js (quote/swap/price), distributor.js (Token-2022 transfers), vault.js (keypair)
     src/keeper/                scheduler.js (6h + jitter), runner.js (state machine, resumable)
@@ -85,6 +85,14 @@ Ownership during the parallel build (do not edit files you don't own; add new fi
 | SESSION_SECRET | random per boot if blank (log a warning) | HMAC key for session tokens |
 | CORS_ORIGIN | * | |
 | JUP_BASE | https://lite-api.jup.ag | |
+| AUTH_CHAIN_ID | 4663 | the EVM chain sign-in is bound to. Robinhood Chain mainnet is 4663 (`0x1237`); testnet is 46630. Goes into the EIP-4361 `Chain ID` field |
+| AUTH_CHAIN_NAME | Robinhood Chain | display only |
+| AUTH_CHAIN_RPC_URL | https://rpc.mainnet.chain.robinhood.com | verified live 2026-09-23; public fallback `https://robinhood-rpc.publicnode.com` |
+| SITE_ORIGIN | https://stoxvault.vercel.app | EIP-4361 domain binding: `cfg.authDomain` is its host, `cfg.authUri` its origin. A signature collected by another site does not rebuild to this message |
+
+`CFG.walletChain` = `'evm'`, `CFG.payoutChain` = `'solana'`, `CFG.walletChainMatchesPayout` = `false`.
+That last flag is the single switch every honest state on the site hangs off (§5 `attribution`): while it is
+false, a connected wallet can prove it is yours but can never be matched to a holder, shown a balance or paid.
 
 `CFG.mode` = `'LIVE' | 'DRY_RUN' | 'READ_ONLY'` (read-only when no vault secret).
 `CFG.rules` = `{ minPicks: 2, maxPicks: 5, minPct: 10, maxPct: 60, eligibleBps, intervalHours, universeSize, defaultBasketSize, antiCheat, openSnapshotWindowMin }`.
@@ -103,6 +111,9 @@ Universe { updatedAt, source, stocks: Stock[20], all: Stock[] (every liquid xSto
 
 Pick { mint, symbol, pct }             // pct integer 10..60
 Prefs { wallet, picks: Pick[], signature, message, updatedAt }   // stored as signed by the user
+                                       // `wallet` is an EIP-55 EVM address (§5); `signature` is EIP-191 hex.
+                                       // `Holder.wallet` below is still a base58 SOLANA address — the two
+                                       // are different chains and, today, never the same set.
 
 Holder { wallet, balance: string (base units, bigint as string),
          openBalance?, closeBalance?: string, reduced?: true }   // the last three only under the full-cycle rule (§7)
@@ -235,22 +246,62 @@ Public:
 - `GET /api/rounds?limit&offset` → `{ items, total }` ; `GET /api/rounds/:id` → full Round
 - `GET /api/rounds/preview` → what the next round would do NOW: `{ simulated: true, basis: 'live-snapshot'|'no-token', poolSol, demand, top5, note }` (with no token: demand from equal-weight prefs, no per-holder amounts)
 
-Auth (one message signature, never a transaction):
-- `POST /api/auth/nonce` body `{ wallet }` → `{ nonce, message, expiresAt }`. Message text, exactly these lines joined by `\n`:
+Auth (one message signature, never a transaction) — **EVM / Robinhood Wallet since 2026-09-23**:
+
+A **wallet** is a `0x`-prefixed 20-byte EVM address. Input is accepted in any case; the server stores,
+compares and displays exactly one canonical spelling, the **EIP-55 checksum** form. `requireWallet` in
+`api/router.js` normalises before anything else sees the value, so `0xabc…` and `0xABC…` can never
+become two accounts. A base58 Solana address is now `bad_wallet`.
+
+- `POST /api/auth/nonce` body `{ wallet }` → `{ wallet, nonce, message, issuedAt, expiresAt, chainId, chainName, domain, uri }`.
+  The message is **EIP-4361 (Sign-In With Ethereum)**, fields in the standard's order:
   ```
-  STOCKDROP
-  Sign to verify you own this wallet.
-  This is not a transaction. Nothing leaves your wallet.
-  Wallet: <wallet>
+  <domain> wants you to sign in with your Ethereum account:
+  <wallet, EIP-55 checksummed>
+
+  Sign to verify you own this wallet. This is not a transaction. Nothing leaves your wallet.
+
+  URI: <uri>
+  Version: 1
+  Chain ID: <chainId>
   Nonce: <nonce>
-  Issued: <ISO time>
+  Issued At: <ISO time>
   ```
-- `POST /api/auth/verify` body `{ wallet, nonce, signature }` (signature base58 OR base64 of the 64-byte ed25519 sig over the UTF-8 message bytes) → `{ token, wallet, expiresAt, me }` where `me` is the same object as GET /api/me.
-  Verification = node:crypto `verify(null, msgBytes, spkiKey(walletPubkeyBytes), sig)`. Nonce is single-use, 10 min TTL.
-- Session token: `base64url(json payload).base64url(hmacSha256(SESSION_SECRET, payload))`, 7-day expiry. Sent as `Authorization: Bearer <token>`.
+  The statement keeps the two promises word for word. `domain` / `uri` bind the signature to this site and
+  `Chain ID` to Robinhood Chain, so a signature collected elsewhere, or for another chain, does not rebuild
+  to this text and is refused. The nonce is 24 alphanumeric characters (8 base36 digits of the issue time +
+  16 hex of randomness, no separator — EIP-4361 forbids one) and carries its own issue time, so the server
+  rebuilds the exact message from `{wallet, nonce}` alone.
+- `POST /api/auth/verify` body `{ wallet, nonce, signature }` → `{ token, wallet, expiresAt, me }` where `me` is the same object as GET /api/me.
+  `signature` is a 65-byte `r || s || v` **EIP-191 personal_sign** signature as `0x` hex (bare hex and base64 are also accepted).
+  Verification: `keccak256("\x19Ethereum Signed Message:\n" + byteLength(message) + message)`, secp256k1 public-key
+  recovery, and the last 20 bytes of `keccak256(uncompressed pubkey without its 0x04 tag)` must equal the claimed wallet.
+  `v` may be 27/28 or 0/1. **An upper-half `s` is refused (EIP-2)** so one signature cannot be replayed in its
+  malleable twin. Curve and hash come from `@noble/curves` / `@noble/hashes` — the only dependency this change
+  added, and no elliptic-curve maths is hand-rolled on an auth path. Nonce is single-use, 10 min TTL, and is
+  burned before the signature is checked.
+- Session token: `base64url(json payload).base64url(hmacSha256(SESSION_SECRET, payload))`, 7-day expiry, `v: 2`. Sent as `Authorization: Bearer <token>`.
 
 Me (Bearer):
-- `GET /api/me` → `{ wallet, balance: {raw, ui, eligible, thresholdUi, pctOfSupply} | null (no token yet), prefs: Prefs|null, effectivePicks: Pick[] (prefs or default top5), projected: { shareBps|null, note } }`
+- `GET /api/me` → `{ wallet, balance: … | null, attribution, prefs, effectivePicks, picksSource, projected, cycle, nextRoundAt }`
+- **`attribution` is the honest state, and it is the point of the EVM move.** Sign-in is an EVM address; holder
+  balances, eligibility and every payout still read a SOLANA token, and the keeper still pays out on Solana. An
+  EVM address can never appear in a Solana holder snapshot, so the server does not read a balance at all while
+  the two disagree — "we did not look, and here is why" is the truth, and "we looked and you hold zero" is not.
+  ```ts
+  attribution: {
+    signInChain: 'evm', signInChainId: number, signInChainName: string,
+    payoutChain: 'solana',
+    chainsMatch: boolean,      // cfg.walletChainMatchesPayout — false today
+    tokenSet: boolean,         // cfg.launched
+    balanceRead: boolean,      // chainsMatch && tokenSet: the ONLY case a balance is read
+    eligible: false,           // hard false while chainsMatch is false. No code path makes it true.
+    canReceive: false,
+    headline: string, note: string   // each reason named once, and dropped when it stops being true
+  }
+  ```
+  While `balanceRead` is false: `balance` is `null`, `projected.shareBps` is `null` with `attribution.note` as its
+  note, and `cycle.eligible` is `null` — unknown, never `false`-as-verdict and never `true`.
 - `PUT /api/me/prefs` body `{ picks: [{mint, pct}], signature?, message? }` → validated with engine `validatePicks` → `Prefs`. Errors: 400 `{ error: 'invalid_picks', code, detail }` codes: `count`, `range`, `sum`, `not_in_universe`, `duplicate`.
 - `DELETE /api/me/prefs` → `{ ok: true }` (back to default basket)
 
@@ -410,7 +461,28 @@ Universe source: `GET {JUP_BASE}/tokens/v2/search?query=xStock&limit=100` (field
 ## 8. Web (static, vanilla ES modules, no framework, no bundler)
 
 - Loads `public/js/config.js` (sets `window.STOCKDROP.apiBase`; default `http://localhost:4700` when on localhost, else the Railway URL placeholder `https://stockdrop-production.up.railway.app` — read from `<meta name="api-base">` so it is one-line to change).
-- Wallet connect: three options only — **Phantom, Jupiter, Solflare**. Detection via the Wallet Standard (`wallet-standard:app-ready` / `wallet-standard:register-wallet` events, match wallet `name` case-insensitively to phantom / jupiter / solflare) with injected-provider fallback (`window.phantom?.solana`, `window.solflare`). If not installed: button shows "Install" linking to the wallet's site. Connect flow = `connect()` → `POST /api/auth/nonce` → `signMessage(utf8(message))` → `POST /api/auth/verify` → store token in localStorage → `GET /api/me`. NEVER call signTransaction / signAndSendTransaction anywhere.
+- Wallet connect: **Robinhood Wallet only**, two routes, because it has no browser extension.
+  a) **Injected EVM provider** — EIP-6963 (`eip6963:announceProvider` / `eip6963:requestProvider`, matching
+     `info.rdns` then `info.name` against `/robinhood/i`) with an EIP-1193 `window.ethereum` fallback,
+     including its `providers` array. This is the Robinhood Wallet in-app browser on a phone.
+  b) **WalletConnect** — a QR scanned with the app, the only desktop route. Gated on a project id read from
+     `<meta name="walletconnect-project-id">` exactly as `api-base` is read; with none, the option renders
+     **disabled with the reason** rather than appearing and failing. The library is a dynamic import from a
+     CDN at a pinned exact version (`@walletconnect/ethereum-provider@2.17.0`), fetched only when a project
+     id exists. There is no bundler and must not be one.
+  Connect flow = `connect()` → check the chain → `POST /api/auth/nonce` → `personal_sign(hex(utf8(message)), address)`
+  → `POST /api/auth/verify` → store token in localStorage → `GET /api/me`. **Exactly one signature.**
+  `js/wallet.js` routes every provider call through one allow-list — `eth_requestAccounts`, `eth_accounts`,
+  `eth_chainId`, `personal_sign`, `wallet_switchEthereumChain`, `wallet_addEthereumChain` — and nothing else is
+  reachable. NEVER `eth_sendTransaction`, `eth_sign`, `eth_signTypedData*`, or any token approval, anywhere.
+  A chain that is not **Robinhood Chain (4663 / `0x1237`, RPC `https://rpc.mainnet.chain.robinhood.com`)** is
+  stated plainly and the switch is offered as a button — `wallet_switchEthereumChain` with
+  `wallet_addEthereumChain` as the 4902 fallback. Nothing switches a network silently. Addresses are compared
+  with `sameAddress()` (case-insensitive): the wallet says lower case, the server says EIP-55.
+- **The site must not imply a connected wallet will receive anything.** Sign-in is EVM, payouts are Solana, and
+  the token is not set: `/api/me.attribution` says so and the page renders that sentence verbatim in
+  `#proj-chain-note`, alongside a static callout in the wallet modal. No eligible state is invented and no
+  balance is shown.
 - Charts: TradingView `lightweight-charts` 4.x from unpkg for candles; everything else (donut, bars, sparklines) hand-drawn inline SVG. No chart.js, no random gradients.
 - Every number that comes from DRY_RUN / simulated data is labelled "simulated" in the UI. Pre-launch states say "not launched yet". Do not fake holders, rounds, or fills.
 - Design brief: see §9.
@@ -435,4 +507,6 @@ Reference points: Bloomberg terminal density, Nasdaq.com / Robinhood typographic
 
 - `cd server && npm test` passes; `npm start` boots in DRY_RUN with the JSON store and serves every endpoint in §5 with real Jupiter/Yahoo data.
 - `POST /api/admin/round/run` in DRY_RUN with `TOKEN_MINT` blank returns a SKIPPED(no_token) round; with a synthetic holder set injected in tests it produces a fully populated simulated round whose math matches the engine tests.
-- Web served statically (`npx serve web/public` or any static server) renders every section with live API data, connects Phantom via message signature, saves and reloads picks, works at 375px and 1280px, no console errors.
+- Web served statically (`npx serve web/public` or any static server) renders every section with live API data, connects Robinhood Wallet via one `personal_sign` message, saves and reloads picks, works at 375px and 1280px, no console errors.
+- `node --test web/test/` passes from the repo root.
+- A connected wallet is never shown as eligible and never shown a balance while `walletChainMatchesPayout` is false, on the page and in `/api/me`.

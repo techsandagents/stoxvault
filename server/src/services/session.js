@@ -1,27 +1,64 @@
 /**
- * STOCKDROP — wallet sign-in.
+ * STOXVAULT — wallet sign-in (EVM / Robinhood Wallet).
  *
- * The whole authentication story is one signed message. A user proves they hold
- * the private key of a wallet by signing a fixed text; they never sign a
+ * The whole authentication story is still one signed message. A user proves they
+ * hold the private key of a wallet by signing a fixed text; they never sign a
  * transaction, nothing leaves their wallet, and the server never sees a key.
  *
- * Pieces:
- *   - a single-use nonce with a 10 minute TTL, stored via the Store
- *   - the exact message text from CONTRACT.md section 5
- *   - ed25519 verification with node:crypto only: the raw 32-byte Solana public
- *     key is wrapped in the 12-byte SPKI DER prefix for id-Ed25519 by hand
- *   - a stateless session token `base64url(payload).base64url(hmac)` (7 days)
+ * WHAT CHANGED, AND WHY. Robinhood Wallet connects to dapps on Ethereum,
+ * Polygon, Arbitrum, Optimism, Base and Robinhood Chain — Solana is not on that
+ * list, and there is no browser extension, only the in-app browser and
+ * WalletConnect. So it can never produce the ed25519 Solana signature this file
+ * used to verify. Sign-in is therefore EVM:
+ *
+ *   - a wallet is a 0x-prefixed 20-byte address, canonicalised to its EIP-55
+ *     checksum form, so "0xabc…" and "0xABC…" are one account and never two
+ *   - the message is EIP-4361 (Sign-In With Ethereum): domain binding, URI,
+ *     chain id, nonce, issue time — a signature for another site cannot be
+ *     replayed here, and one for another chain cannot either
+ *   - verification is EIP-191 personal_sign: keccak256 of
+ *     "\x19Ethereum Signed Message:\n" + byteLength(message) + message, then
+ *     secp256k1 public-key recovery from r||s||v, then the last 20 bytes of the
+ *     keccak of the uncompressed public key
+ *   - EIP-2 low-s is enforced, so the same signature cannot be replayed in its
+ *     malleable twin
+ *
+ * The curve and the hash come from @noble/curves / @noble/hashes — audited
+ * implementations. No elliptic-curve arithmetic is hand-rolled on an auth path.
+ *
+ * Everything else is unchanged: single-use nonce with a 10 minute TTL, an HMAC
+ * session token with the same 7-day expiry, the same requireAuth contract.
  *
  * Nothing here logs a signature, a token, or the session secret.
  */
 
 import crypto from 'node:crypto';
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { keccak_256 } from '@noble/hashes/sha3';
 
 export const NONCE_TTL_MS = 10 * 60 * 1000;
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-export const TOKEN_VERSION = 1;
+export const TOKEN_VERSION = 2;
+
+/**
+ * Robinhood Chain mainnet, verified live 2026-09-23:
+ * chain id 4663 (0x1237), RPC https://rpc.mainnet.chain.robinhood.com.
+ * These are only defaults — config.js supplies the running values.
+ */
+export const DEFAULT_CHAIN_ID = 4663;
+export const DEFAULT_DOMAIN = 'stoxvault.vercel.app';
+export const DEFAULT_URI = 'https://stoxvault.vercel.app';
+
+/** secp256k1 group order, and the halfway point EIP-2 refuses to go past. */
+const CURVE_N = secp256k1.CURVE.n;
+const HALF_N = CURVE_N >> 1n;
 
 /* --------------------------------------------------------------- base58 ---- */
+/*
+ * Kept because the Solana side of the product still needs it: services/holders.js
+ * decodes token-account owners with these. They have nothing to do with sign-in
+ * any more.
+ */
 
 const B58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const B58_INDEX = new Map([...B58_ALPHABET].map((ch, i) => [ch, i]));
@@ -86,102 +123,232 @@ export function b58decode(str) {
   return out;
 }
 
-/** The 32 raw bytes of a Solana address, or null if it is not one. */
-export function walletBytes(wallet) {
-  if (typeof wallet !== 'string' || wallet.length < 32 || wallet.length > 44) return null;
-  const bytes = b58decode(wallet);
-  return bytes && bytes.length === 32 ? bytes : null;
+/** True when `value` is a syntactically valid base58 Solana address. */
+export function isSolanaAddress(value) {
+  if (typeof value !== 'string' || value.length < 32 || value.length > 44) return false;
+  const bytes = b58decode(value);
+  return Boolean(bytes && bytes.length === 32);
 }
 
-/** True when `wallet` is a syntactically valid Solana address. */
-export function isWallet(wallet) {
-  return walletBytes(wallet) !== null;
+/* ------------------------------------------------------------- addresses --- */
+
+const HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+const hex = (bytes) => Buffer.from(bytes).toString('hex');
+
+/** keccak256 of some bytes, as a Uint8Array. */
+export function keccak256(bytes) {
+  return keccak_256(bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes));
 }
 
-/* ---------------------------------------------------------------- ed25519 -- */
-
-// SPKI DER for an Ed25519 public key:
-//   SEQUENCE { SEQUENCE { OID 1.3.101.112 }, BIT STRING (0 unused bits) { 32 bytes } }
-// which is a fixed 12-byte prefix followed by the raw key.
-const SPKI_ED25519_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+/** Raw shape check only: 0x + 40 hex digits, any case. */
+export function isHexAddress(value) {
+  return typeof value === 'string' && HEX_ADDRESS.test(value.trim());
+}
 
 /**
- * Wrap 32 raw ed25519 public key bytes into a node:crypto KeyObject.
- * @param {Uint8Array} pubkey32
- * @returns {crypto.KeyObject}
+ * EIP-55 mixed-case checksum. The canonical form this server stores, compares
+ * and displays: one address has exactly one spelling here, so two users can
+ * never end up holding "different" accounts that are the same address.
+ * @param {string} value
+ * @returns {string|null}
  */
-export function spkiKey(pubkey32) {
-  const raw = Buffer.from(pubkey32);
-  if (raw.length !== 32) throw new TypeError('ed25519 public key must be 32 bytes');
-  return crypto.createPublicKey({
-    key: Buffer.concat([SPKI_ED25519_PREFIX, raw]),
-    format: 'der',
-    type: 'spki',
-  });
+export function toChecksumAddress(value) {
+  if (!isHexAddress(value)) return null;
+  const lower = value.trim().slice(2).toLowerCase();
+  const digest = hex(keccak256(Buffer.from(lower, 'ascii')));
+  let out = '0x';
+  for (let i = 0; i < lower.length; i++) {
+    out += Number.parseInt(digest[i], 16) >= 8 ? lower[i].toUpperCase() : lower[i];
+  }
+  return out;
 }
 
 /**
- * Decode a 64-byte signature given as base58 or base64 / base64url.
- * base58 is tried first (that is what every Solana wallet returns from
- * `signMessage` after the usual bs58 encode); base64 is accepted because some
- * wallet wrappers hand back `Buffer.toString('base64')`.
+ * Anything a client sent -> the one canonical spelling, or null.
+ * Mixed case in, checksum case out; nothing else is accepted.
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+export function normalizeWallet(value) {
+  return typeof value === 'string' ? toChecksumAddress(value) : null;
+}
+
+/** The 20 raw bytes of an EVM address, or null if it is not one. */
+export function walletBytes(wallet) {
+  const normal = normalizeWallet(wallet);
+  return normal ? Uint8Array.from(Buffer.from(normal.slice(2), 'hex')) : null;
+}
+
+/** True when `wallet` is a syntactically valid EVM address. */
+export function isWallet(wallet) {
+  return normalizeWallet(wallet) !== null;
+}
+
+/**
+ * True when the address is already written in its canonical checksum form.
+ * A wallet that sends `0xAbC…` in the wrong case is still accepted — it is
+ * normalised — but a stored row that is not canonical is a bug worth seeing.
+ */
+export function isChecksumAddress(value) {
+  return isHexAddress(value) && toChecksumAddress(value) === value.trim();
+}
+
+/* -------------------------------------------------------------- EIP-191 ---- */
+
+const PERSONAL_PREFIX = '\u0019Ethereum Signed Message:\n';
+
+/**
+ * The 32-byte digest a wallet actually signs for `personal_sign`:
+ *   keccak256("\x19Ethereum Signed Message:\n" + byteLength(message) + message)
+ * The length is the UTF-8 BYTE length, not the character count — a message with
+ * one non-ASCII character would otherwise hash differently on each side.
+ * @param {string|Uint8Array} message
+ * @returns {Uint8Array}
+ */
+export function hashPersonalMessage(message) {
+  const body = typeof message === 'string' ? Buffer.from(message, 'utf8') : Buffer.from(message);
+  const prefix = Buffer.from(`${PERSONAL_PREFIX}${body.length}`, 'utf8');
+  return keccak256(Buffer.concat([prefix, body]));
+}
+
+/**
+ * Decode a 65-byte `r || s || v` signature.
+ *
+ * Accepts 0x-prefixed hex, bare hex, and base64 / base64url (some wallet
+ * wrappers hand back `Buffer.toString('base64')`). Returns null — never throws —
+ * for anything that is not a well-formed, non-malleable signature:
+ *
+ *   - r and s must be in [1, n)
+ *   - s must be in the LOWER half of the order (EIP-2). The upper-half twin
+ *     (n - s, with v flipped) verifies to the same key on a naive
+ *     implementation, which would let one signature be replayed in two forms.
+ *   - v is 27/28 or 0/1. Nothing else: an EIP-155 transaction v is not a
+ *     personal_sign v and is refused rather than quietly reduced.
+ *
  * @param {string} signature
- * @returns {Buffer|null}
+ * @returns {{r: bigint, s: bigint, recovery: 0|1, bytes: Buffer}|null}
  */
 export function decodeSignature(signature) {
   if (typeof signature !== 'string') return null;
   const s = signature.trim();
   if (s === '' || s.length > 200) return null;
 
-  const b58 = b58decode(s);
-  if (b58 && b58.length === 64) return Buffer.from(b58);
-
-  if (/^[A-Za-z0-9+/_=-]+$/.test(s)) {
+  let raw = null;
+  const body = s.startsWith('0x') || s.startsWith('0X') ? s.slice(2) : s;
+  if (/^[0-9a-fA-F]{130}$/.test(body)) {
+    raw = Buffer.from(body, 'hex');
+  } else if (!s.startsWith('0x') && !s.startsWith('0X') && /^[A-Za-z0-9+/_=-]+$/.test(s)) {
     try {
       const buf = Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
-      if (buf.length === 64) return buf;
+      if (buf.length === 65) raw = buf;
     } catch {
-      /* fall through */
+      return null;
     }
   }
-  return null;
+  if (!raw || raw.length !== 65) return null;
+
+  const r = BigInt(`0x${raw.subarray(0, 32).toString('hex')}`);
+  const sv = BigInt(`0x${raw.subarray(32, 64).toString('hex')}`);
+  const v = raw[64];
+
+  if (r <= 0n || r >= CURVE_N) return null;
+  if (sv <= 0n || sv >= CURVE_N) return null;
+  if (sv > HALF_N) return null; // EIP-2: upper-half s is malleable, refuse it
+
+  let recovery;
+  if (v === 27 || v === 0) recovery = 0;
+  else if (v === 28 || v === 1) recovery = 1;
+  else return null;
+
+  return { r, s: sv, recovery, bytes: raw };
 }
 
 /**
- * Verify an ed25519 signature over the UTF-8 bytes of `message`.
+ * Recover the signer of an EIP-191 personal_sign signature.
+ * @param {{message: string, signature: string}} args
+ * @returns {string|null} the checksummed address, or null
+ */
+export function recoverAddress({ message, signature }) {
+  try {
+    if (typeof message !== 'string' || message.length === 0) return null;
+    const decoded = decodeSignature(signature);
+    if (!decoded) return null;
+
+    const digest = hashPersonalMessage(message);
+    const sig = new secp256k1.Signature(decoded.r, decoded.s, decoded.recovery);
+    const point = sig.recoverPublicKey(digest);
+    if (!point) return null;
+
+    // Uncompressed key is 0x04 || X || Y; the address is the last 20 bytes of
+    // the keccak of X || Y.
+    const uncompressed = point.toBytes(false);
+    const digest2 = keccak256(uncompressed.subarray(1));
+    return toChecksumAddress(`0x${hex(digest2.subarray(12))}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verify an EIP-191 signature over `message` against a claimed wallet.
  * Never throws: any malformed input is simply "not verified".
  * @param {{wallet: string, message: string, signature: string}} args
  * @returns {boolean}
  */
 export function verifySignature({ wallet, message, signature }) {
-  try {
-    const pubkey = walletBytes(wallet);
-    if (!pubkey) return false;
-    const sig = decodeSignature(signature);
-    if (!sig) return false;
-    if (typeof message !== 'string' || message.length === 0) return false;
-    return crypto.verify(null, Buffer.from(message, 'utf8'), spkiKey(pubkey), sig);
-  } catch {
-    return false;
-  }
+  const claimed = normalizeWallet(wallet);
+  if (!claimed) return false;
+  const recovered = recoverAddress({ message, signature });
+  if (!recovered) return false;
+  // Both sides are canonical, so this is a plain string compare on 42 chars.
+  return crypto.timingSafeEqual(Buffer.from(recovered, 'ascii'), Buffer.from(claimed, 'ascii'));
 }
 
 /* ---------------------------------------------------------------- message -- */
 
 /**
- * The sign-in message, exactly as specified in CONTRACT.md section 5.
- * Six lines joined by "\n". Any change here invalidates every wallet's flow,
- * so it is asserted character for character in test/session.test.js.
- * @param {{wallet: string, nonce: string, issuedAt: string}} args
+ * The one sentence that has to survive every redesign: this is not a
+ * transaction, and nothing leaves the wallet. EIP-4361 puts the statement on a
+ * single line, so the three sentences run together rather than wrapping.
  */
-export function buildSignInMessage({ wallet, nonce, issuedAt }) {
+export const SIGN_IN_STATEMENT =
+  'Sign to verify you own this wallet. This is not a transaction. Nothing leaves your wallet.';
+
+/**
+ * The sign-in message: EIP-4361 (Sign-In With Ethereum), field order as the
+ * standard specifies it.
+ *
+ * The domain and URI bind the signature to this site, and `Chain ID` binds it to
+ * Robinhood Chain: a signature collected by another site, or issued for another
+ * chain, does not rebuild to this text and is refused. Any change here
+ * invalidates every wallet's flow, so it is asserted line for line in
+ * test/session.test.js.
+ *
+ * @param {{wallet: string, nonce: string, issuedAt: string, domain?: string, uri?: string, chainId?: number}} args
+ */
+export function buildSignInMessage({
+  wallet,
+  nonce,
+  issuedAt,
+  domain = DEFAULT_DOMAIN,
+  uri = DEFAULT_URI,
+  chainId = DEFAULT_CHAIN_ID,
+}) {
+  // The address line must be the EIP-55 form; a wallet that shows the message
+  // will render it exactly as written.
+  const address = normalizeWallet(wallet) || String(wallet);
   return [
-    'STOCKDROP',
-    'Sign to verify you own this wallet.',
-    'This is not a transaction. Nothing leaves your wallet.',
-    `Wallet: ${wallet}`,
+    `${domain} wants you to sign in with your Ethereum account:`,
+    address,
+    '',
+    SIGN_IN_STATEMENT,
+    '',
+    `URI: ${uri}`,
+    'Version: 1',
+    `Chain ID: ${chainId}`,
     `Nonce: ${nonce}`,
-    `Issued: ${issuedAt}`,
+    `Issued At: ${issuedAt}`,
   ].join('\n');
 }
 
@@ -189,18 +356,24 @@ export function buildSignInMessage({ wallet, nonce, issuedAt }) {
  * Nonces carry their own issue time so the server can rebuild the exact message
  * from `{wallet, nonce}` alone at verify time, without a second round trip and
  * without trusting anything the client sends.
- * Format: `<issuedAtMs base36>.<16 random hex>`
+ *
+ * EIP-4361 requires the nonce to be alphanumeric and at least 8 characters, so
+ * the format is 8 base36 digits of the issue time followed by 16 hex digits of
+ * randomness — 24 characters, no separator.
  */
+const NONCE_TIME_LEN = 8;
+const NONCE_RE = /^[0-9a-z]{8}[0-9a-f]{16}$/;
+
 export function mintNonce(now = Date.now()) {
-  return `${Math.floor(now).toString(36)}.${crypto.randomBytes(8).toString('hex')}`;
+  const stamp = Math.floor(now).toString(36);
+  if (stamp.length > NONCE_TIME_LEN) throw new RangeError('nonce timestamp overflowed its field');
+  return stamp.padStart(NONCE_TIME_LEN, '0') + crypto.randomBytes(8).toString('hex');
 }
 
 /** Issue time encoded in a nonce, or null when the nonce is malformed. */
 export function nonceIssuedAt(nonce) {
-  if (typeof nonce !== 'string') return null;
-  const m = /^([0-9a-z]{1,12})\.([0-9a-f]{16})$/.exec(nonce);
-  if (!m) return null;
-  const ms = Number.parseInt(m[1], 36);
+  if (typeof nonce !== 'string' || !NONCE_RE.test(nonce)) return null;
+  const ms = Number.parseInt(nonce.slice(0, NONCE_TIME_LEN), 36);
   if (!Number.isFinite(ms) || ms <= 0) return null;
   return ms;
 }
@@ -224,7 +397,7 @@ function safeEqual(a, b) {
  * createSessionService({ cfg, db })
  *
  * @param {object} args
- * @param {object} args.cfg   CFG (uses cfg.sessionSecret only)
+ * @param {object} args.cfg   CFG (sessionSecret, authDomain, authUri, authChainId)
  * @param {object} args.db    Store (putNonce / takeNonce)
  * @param {() => number} [args.now]
  */
@@ -237,18 +410,36 @@ export function createSessionService({ cfg, db, now = Date.now } = {}) {
   const secret = String(cfg.sessionSecret || '');
   if (secret === '') throw new TypeError('createSessionService: cfg.sessionSecret is empty');
 
+  const domain = String(cfg.authDomain || DEFAULT_DOMAIN);
+  const uri = String(cfg.authUri || DEFAULT_URI);
+  const chainId = Number.isInteger(cfg.authChainId) ? cfg.authChainId : DEFAULT_CHAIN_ID;
+
+  const messageFor = (wallet, nonce, issuedAt) =>
+    buildSignInMessage({ wallet, nonce, issuedAt, domain, uri, chainId });
+
   /**
    * Issue a nonce + the exact message to sign, and remember the nonce.
    * @param {string} wallet
-   * @returns {Promise<{nonce: string, message: string, issuedAt: string, expiresAt: string}>}
+   * @returns {Promise<{wallet: string, nonce: string, message: string, issuedAt: string, expiresAt: string, chainId: number, domain: string, uri: string}>}
    */
   async function issueNonce(wallet) {
+    const address = normalizeWallet(wallet);
+    if (!address) throw new TypeError('issueNonce: wallet is not an EVM address');
     const at = now();
     const nonce = mintNonce(at);
     const issuedAt = new Date(at).toISOString();
     const expiresAt = new Date(at + NONCE_TTL_MS).toISOString();
-    await db.putNonce(wallet, nonce, expiresAt);
-    return { nonce, message: buildSignInMessage({ wallet, nonce, issuedAt }), issuedAt, expiresAt };
+    await db.putNonce(address, nonce, expiresAt);
+    return {
+      wallet: address,
+      nonce,
+      message: messageFor(address, nonce, issuedAt),
+      issuedAt,
+      expiresAt,
+      chainId,
+      domain,
+      uri,
+    };
   }
 
   /**
@@ -258,10 +449,11 @@ export function createSessionService({ cfg, db, now = Date.now } = {}) {
    * offered once is never usable again, whatever the outcome.
    *
    * @param {{wallet: string, nonce: string, signature: string, message?: string}} args
-   * @returns {Promise<{ok: true, message: string} | {ok: false, error: string, detail: string}>}
+   * @returns {Promise<{ok: true, wallet: string, message: string} | {ok: false, error: string, detail: string}>}
    */
   async function verify({ wallet, nonce, signature, message }) {
-    if (!isWallet(wallet)) return { ok: false, error: 'bad_wallet', detail: 'wallet is not a Solana address' };
+    const address = normalizeWallet(wallet);
+    if (!address) return { ok: false, error: 'bad_wallet', detail: 'wallet is not a 0x EVM address' };
 
     const issuedMs = nonceIssuedAt(nonce);
     if (issuedMs === null) return { ok: false, error: 'bad_nonce', detail: 'nonce is malformed' };
@@ -271,30 +463,32 @@ export function createSessionService({ cfg, db, now = Date.now } = {}) {
       return { ok: false, error: 'nonce_expired', detail: 'ask for a new nonce and sign again' };
     }
 
-    const expected = buildSignInMessage({ wallet, nonce, issuedAt: new Date(issuedMs).toISOString() });
+    const expected = messageFor(address, nonce, new Date(issuedMs).toISOString());
     if (message !== undefined && message !== null && String(message) !== expected) {
       return { ok: false, error: 'message_mismatch', detail: 'the signed message is not the one this nonce was issued for' };
     }
 
-    const consumed = await db.takeNonce(wallet, nonce);
+    const consumed = await db.takeNonce(address, nonce);
     if (!consumed) return { ok: false, error: 'bad_nonce', detail: 'unknown, expired or already-used nonce' };
 
-    if (!verifySignature({ wallet, message: expected, signature })) {
+    if (!verifySignature({ wallet: address, message: expected, signature })) {
       return { ok: false, error: 'bad_signature', detail: 'signature does not match this wallet' };
     }
-    return { ok: true, message: expected };
+    return { ok: true, wallet: address, message: expected };
   }
 
   /**
    * Mint a session token. `base64url(payload).base64url(hmacSha256(secret, payload))`
    * @param {string} wallet
-   * @returns {{token: string, expiresAt: string, issuedAt: string}}
+   * @returns {{token: string, wallet: string, expiresAt: string, issuedAt: string}}
    */
   function issueToken(wallet) {
+    const address = normalizeWallet(wallet);
+    if (!address) throw new TypeError('issueToken: wallet is not an EVM address');
     const at = now();
     const payload = {
       v: TOKEN_VERSION,
-      w: wallet,
+      w: address,
       iat: Math.floor(at / 1000),
       exp: Math.floor((at + SESSION_TTL_MS) / 1000),
     };
@@ -302,6 +496,7 @@ export function createSessionService({ cfg, db, now = Date.now } = {}) {
     const token = `${body}.${b64url(hmac(secret, body))}`;
     return {
       token,
+      wallet: address,
       issuedAt: new Date(payload.iat * 1000).toISOString(),
       expiresAt: new Date(payload.exp * 1000).toISOString(),
     };
@@ -336,12 +531,13 @@ export function createSessionService({ cfg, db, now = Date.now } = {}) {
     }
     if (!payload || typeof payload !== 'object') return null;
     if (payload.v !== TOKEN_VERSION) return null;
-    if (!isWallet(payload.w)) return null;
+    const address = normalizeWallet(payload.w);
+    if (!address) return null;
     if (!Number.isFinite(payload.exp) || !Number.isFinite(payload.iat)) return null;
     if (payload.exp * 1000 <= now()) return null;
 
     return {
-      wallet: payload.w,
+      wallet: address,
       issuedAt: new Date(payload.iat * 1000).toISOString(),
       expiresAt: new Date(payload.exp * 1000).toISOString(),
     };
@@ -386,7 +582,10 @@ export function createSessionService({ cfg, db, now = Date.now } = {}) {
     sessionFromRequest,
     requireAuth,
     optionalAuth,
-    buildSignInMessage,
+    buildSignInMessage: (args) => messageFor(args.wallet, args.nonce, args.issuedAt),
+    domain,
+    uri,
+    chainId,
     nonceTtlMs: NONCE_TTL_MS,
     sessionTtlMs: SESSION_TTL_MS,
   };

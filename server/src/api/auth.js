@@ -1,13 +1,16 @@
 /**
- * STOCKDROP — wallet sign-in.
+ * STOXVAULT — wallet sign-in.
  *
  * Two calls, no transaction, no gas, no approval:
- *   POST /api/auth/nonce   -> the exact text to sign
+ *   POST /api/auth/nonce   -> the exact text to sign (EIP-4361)
  *   POST /api/auth/verify  -> a 7-day session token
  *
  * The message says in plain English that it is not a transaction, because a
  * wallet popup is exactly where users get robbed. Nothing in this project ever
- * asks for signTransaction.
+ * asks for eth_sendTransaction, a token approval, or typed data that moves value.
+ *
+ * The wallet is a Robinhood Wallet EVM address. The signature is EIP-191
+ * personal_sign and is verified in services/session.js.
  */
 
 import express from 'express';
@@ -57,7 +60,20 @@ export function createAuthRouter({ cfg, db, services }) {
       }
 
       const { nonce, message, issuedAt, expiresAt } = await session.issueNonce(wallet);
-      res.json({ wallet, nonce, message, issuedAt, expiresAt });
+      // chainId / domain travel with the challenge so the browser can check it
+      // is signing for the chain and the site it thinks it is, without ever
+      // rebuilding the text itself.
+      res.json({
+        wallet,
+        nonce,
+        message,
+        issuedAt,
+        expiresAt,
+        chainId: session.chainId,
+        chainName: cfg.authChainName,
+        domain: session.domain,
+        uri: session.uri,
+      });
     }),
   );
 
@@ -73,6 +89,7 @@ export function createAuthRouter({ cfg, db, services }) {
 
       const signature = typeof body.signature === 'string' ? body.signature.trim() : '';
       if (signature === '') throw badRequest('bad_signature', 'signature is required');
+      if (signature.length > 200) throw badRequest('bad_signature', 'signature is not a 65-byte personal_sign signature');
 
       const message = body.message === undefined || body.message === null ? undefined : String(body.message);
 

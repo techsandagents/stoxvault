@@ -14,7 +14,7 @@ import express from 'express';
 import { createUniverseService } from '../services/universe.js';
 import { createHistoryService } from '../services/history.js';
 import { createHoldersService } from '../services/holders.js';
-import { createSessionService, isWallet } from '../services/session.js';
+import { createSessionService, normalizeWallet } from '../services/session.js';
 import { createStatsService } from '../services/stats.js';
 import { log } from '../util/log.js';
 import { createPublicRouter } from './public.js';
@@ -55,10 +55,17 @@ export const wrap = (fn) => (req, res, next) => {
 
 /* ---------------------------------------------------------- validation ---- */
 
-/** A Solana address from a path parameter or body field. */
+/**
+ * An EVM address from a path parameter or body field, returned in its single
+ * canonical EIP-55 spelling.
+ *
+ * Normalising HERE rather than at each call site is what stops `0xabc…` and
+ * `0xABC…` becoming two accounts: prefs are keyed by whatever this returns, and
+ * every route that takes a wallet goes through it.
+ */
 export function requireWallet(value, field = 'wallet') {
-  const wallet = typeof value === 'string' ? value.trim() : '';
-  if (!isWallet(wallet)) throw badRequest('bad_wallet', `${field} must be a base58 Solana address`);
+  const wallet = normalizeWallet(typeof value === 'string' ? value.trim() : '');
+  if (!wallet) throw badRequest('bad_wallet', `${field} must be a 0x EVM address`);
   return wallet;
 }
 

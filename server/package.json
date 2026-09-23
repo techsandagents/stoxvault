@@ -17,6 +17,7 @@
     "preflight": "node scripts/preflight.mjs"
   },
   "dependencies": {
+    "@noble/curves": "1.9.7",
     "@solana/spl-token": "0.4.13",
     "@solana/web3.js": "1.98.4",
     "cors": "2.8.5",

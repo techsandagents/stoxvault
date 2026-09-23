@@ -380,6 +380,29 @@ export function buildConfig(env = {}, opts = {}) {
   const slippageBps = clampInt(int(env, 'SLIPPAGE_BPS', 100), 1, 10000, 100);
   const priorityFeeLamports = Math.max(0, int(env, 'PRIORITY_FEE_LAMPORTS', 200000));
 
+  /* --------------------------------------------------- wallet sign-in chain */
+  //
+  // Sign-in is EVM (Robinhood Wallet), the payout side is still Solana. The two
+  // never meet, and the API says so rather than letting a connected wallet look
+  // eligible. Verified live 2026-09-23: Robinhood Chain mainnet is chain id 4663
+  // (0x1237), RPC https://rpc.mainnet.chain.robinhood.com; testnet is 46630.
+  const authChainId = clampInt(int(env, 'AUTH_CHAIN_ID', 4663), 1, 2 ** 32 - 1, 4663);
+  const authChainName = str(env, 'AUTH_CHAIN_NAME', 'Robinhood Chain');
+  const authChainRpcUrl = str(env, 'AUTH_CHAIN_RPC_URL', 'https://rpc.mainnet.chain.robinhood.com');
+  // EIP-4361 domain binding. A signature collected by another site does not
+  // rebuild to this text, so it cannot be replayed here.
+  const siteOrigin = str(env, 'SITE_ORIGIN', 'https://stoxvault.vercel.app').replace(/\/+$/, '');
+  let authDomain = 'stoxvault.vercel.app';
+  let authUri = 'https://stoxvault.vercel.app';
+  try {
+    const parsed = new URL(siteOrigin);
+    authDomain = parsed.host;
+    authUri = parsed.origin;
+  } catch {
+    // A malformed SITE_ORIGIN keeps the built-in default rather than producing a
+    // message no wallet can make sense of.
+  }
+
   const adminKey = str(env, 'ADMIN_KEY', '');
   const sessionSecretEnv = str(env, 'SESSION_SECRET', '');
   const sessionSecret = sessionSecretEnv || crypto.randomBytes(32).toString('hex');
@@ -451,6 +474,19 @@ export function buildConfig(env = {}, opts = {}) {
     corsOrigin,
     jupBase,
 
+    // Sign-in chain vs payout chain. `walletChainMatchesPayout` is the single
+    // flag every honest state on the site hangs off: while it is false, a
+    // connected wallet can be authenticated but can never be a holder.
+    walletChain: 'evm',
+    payoutChain: 'solana',
+    walletChainMatchesPayout: false,
+    authChainId,
+    authChainName,
+    authChainRpcUrl,
+    authDomain,
+    authUri,
+    siteOrigin,
+
     rules,
     lamportsPerSol: LAMPORTS_PER_SOL,
 
@@ -467,6 +503,7 @@ export function buildConfig(env = {}, opts = {}) {
       return [
         `mode=${mode}`,
         `vault=${vaultAddress || 'none (read-only)'}`,
+        `signin=${authChainName} (${authChainId})`,
         `token=${tokenMint || 'not launched'}`,
         `store=${storeKind === 'pg' ? 'postgres' : `json ${dataDir}`}`,
         `rpc=${rpcProvider}`,
@@ -514,6 +551,14 @@ export function buildConfig(env = {}, opts = {}) {
         sessionSecretIsEphemeral,
         corsOrigin,
         jupBase,
+        walletChain: 'evm',
+        payoutChain: 'solana',
+        walletChainMatchesPayout: false,
+        authChainId,
+        authChainName,
+        authChainRpcUrl,
+        authDomain,
+        authUri,
       };
     },
   };
@@ -559,6 +604,12 @@ export function loadConfig(opts = {}) {
     if (!cfg.launched) {
       log.info('TOKEN_MINT is blank: the coin is not launched, rounds will be SKIPPED with reason no_token.');
     }
+    // The one thing an operator must not discover on launch day.
+    log.warn(
+      `sign-in is ${cfg.authChainName} (EVM, chain ${cfg.authChainId}) while holders, eligibility and payouts still read a `
+      + 'SOLANA token: a connected wallet can be authenticated but can never be matched to a holder or paid. '
+      + 'The API and the site say so; do not turn that off.',
+    );
     if (cfg.antiCheat) {
       // The open snapshot fires at an unpredictable moment inside the FIRST
       // openSnapshotWindowMin minutes of each cycle, not shortly before the

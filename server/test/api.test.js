@@ -23,7 +23,10 @@ import path from 'node:path';
 const { buildConfig } = await import('../src/config.js');
 const { openDb } = await import('../src/db/index.js');
 const { createApp } = await import('../src/index.js');
-const { b58encode, b58decode, buildSignInMessage } = await import('../src/services/session.js');
+const { b58encode, b58decode, buildSignInMessage, hashPersonalMessage, toChecksumAddress } = await import('../src/services/session.js');
+const { buildAttribution, buildCycle } = await import('../src/api/me.js');
+const { secp256k1 } = await import('@noble/curves/secp256k1');
+const { keccak_256 } = await import('@noble/hashes/sha3');
 const { createHoldersService, aggregate, parseAccountSlice, tokenAccountsByOwnerParams } = await import('../src/services/holders.js');
 
 const VAULT_ADDRESS = '769fv6KK6SAQ5FBAXdUZLdrppdHn5CqqgJBpFCLyf9up';
@@ -205,13 +208,36 @@ function request(port, method, urlPath, { body, raw, headers = {} } = {}) {
 
 const get = (port, p, opts) => request(port, 'GET', p, opts);
 
+/**
+ * A throwaway Robinhood Wallet: a real secp256k1 key, an EIP-55 address, and an
+ * EIP-191 `personal_sign` signature. This is what signs in now.
+ */
 function newWallet() {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' });
+  const privateKey = secp256k1.utils.randomSecretKey
+    ? secp256k1.utils.randomSecretKey()
+    : secp256k1.utils.randomPrivateKey();
+  const pub = secp256k1.getPublicKey(privateKey, false);
+  const address = toChecksumAddress(`0x${Buffer.from(keccak_256(pub.subarray(1))).subarray(12).toString('hex')}`);
   return {
-    address: b58encode(Buffer.from(spki.subarray(spki.length - 32))),
-    sign: (message) => b58encode(crypto.sign(null, Buffer.from(message, 'utf8'), privateKey)),
+    address,
+    sign(message) {
+      const sig = secp256k1.sign(hashPersonalMessage(message), privateKey, { prehash: false });
+      return `0x${sig.r.toString(16).padStart(64, '0')}${sig.s.toString(16).padStart(64, '0')}${(27 + sig.recovery)
+        .toString(16)
+        .padStart(2, '0')}`;
+    },
   };
+}
+
+/**
+ * A throwaway SOLANA address. Sign-in cannot produce one any more — this exists
+ * only for the holder-snapshot fixtures, which still read a Solana token, and
+ * the gap between the two is exactly what this release is honest about.
+ */
+function newSolanaAddress() {
+  const { publicKey } = crypto.generateKeyPairSync('ed25519');
+  const spki = publicKey.export({ format: 'der', type: 'spki' });
+  return b58encode(Buffer.from(spki.subarray(spki.length - 32)));
 }
 
 /** The whole sign-in dance, returning a usable Bearer token. */
@@ -423,7 +449,17 @@ test('GET /api/prefs/:wallet and /api/holders', async (t) => {
   const bad = await get(s.port, '/api/prefs/not-a-wallet');
   assert.equal(bad.status, 400);
   assert.equal(bad.json.error, 'bad_wallet');
-  assert.equal(bad.json.detail, 'wallet must be a base58 Solana address');
+  assert.equal(bad.json.detail, 'wallet must be a 0x EVM address');
+
+  // One address, one account: a prefs read in a different case finds the same row.
+  const mixed = await get(s.port, `/api/prefs/${wallet.toLowerCase()}`);
+  assert.equal(mixed.status, 200);
+  assert.equal(mixed.json.wallet, wallet, 'the canonical EIP-55 spelling comes back');
+  assert.equal(
+    (await get(s.port, '/api/prefs/769fv6KK6SAQ5FBAXdUZLdrppdHn5CqqgJBpFCLyf9up')).json.error,
+    'bad_wallet',
+    'a Solana address is not a wallet here',
+  );
 
   const holders = await get(s.port, '/api/holders');
   assert.equal(holders.status, 200);
@@ -496,8 +532,18 @@ test('the full sign-in flow: nonce, signature, token, /api/me', async (t) => {
     nonce.json.message,
     buildSignInMessage({ wallet: wallet.address, nonce: nonce.json.nonce, issuedAt: nonce.json.issuedAt }),
   );
-  assert.ok(nonce.json.message.startsWith('STOCKDROP\nSign to verify you own this wallet.'));
+  assert.ok(
+    nonce.json.message.startsWith(
+      `${nonce.json.domain} wants you to sign in with your Ethereum account:\n${wallet.address}`,
+    ),
+    nonce.json.message,
+  );
   assert.ok(nonce.json.message.includes('This is not a transaction.'));
+  assert.ok(nonce.json.message.includes('Nothing leaves your wallet.'));
+  assert.ok(nonce.json.message.includes(`Chain ID: ${nonce.json.chainId}`), nonce.json.message);
+  assert.equal(nonce.json.chainId, 4663, 'Robinhood Chain mainnet');
+  assert.equal(nonce.json.chainName, 'Robinhood Chain');
+  assert.match(nonce.json.nonce, /^[0-9a-z]{24}$/, 'SIWE nonces are alphanumeric');
   assert.equal(Date.parse(nonce.json.expiresAt) - Date.parse(nonce.json.issuedAt), 10 * 60 * 1000);
 
   const verified = await request(s.port, 'POST', '/api/auth/verify', {
@@ -516,7 +562,25 @@ test('the full sign-in flow: nonce, signature, token, /api/me', async (t) => {
   assert.equal(me.json.prefs, null);
   assert.equal(me.json.picksSource, 'default');
   assert.equal(me.json.projected.shareBps, null);
-  assert.ok(me.json.projected.note.includes('not launched'));
+
+  // THE HONEST PART. Sign-in is EVM; holders, eligibility and payouts are
+  // still Solana. The document says so in as many words and never offers an
+  // eligible state or a balance.
+  const attribution = me.json.attribution;
+  assert.equal(attribution.signInChain, 'evm');
+  assert.equal(attribution.signInChainId, 4663);
+  assert.equal(attribution.signInChainName, 'Robinhood Chain');
+  assert.equal(attribution.payoutChain, 'solana');
+  assert.equal(attribution.chainsMatch, false);
+  assert.equal(attribution.tokenSet, false);
+  assert.equal(attribution.balanceRead, false);
+  assert.equal(attribution.eligible, false, 'never true while the chains disagree');
+  assert.equal(attribution.canReceive, false);
+  assert.ok(attribution.note.includes('Robinhood Chain'), attribution.note);
+  assert.ok(attribution.note.includes('Solana'), attribution.note);
+  assert.ok(attribution.note.includes('the token is not set'), attribution.note);
+  assert.equal(me.json.projected.note, attribution.note, 'one explanation, not two');
+  assert.equal(me.json.cycle.eligible, null, 'unknown, never false-as-verdict and never true');
   assert.deepEqual(
     me.json.effectivePicks.map((p) => [p.symbol, p.pct]),
     [['AAPLx', 20], ['AMZNx', 20], ['GOOGLx', 20], ['MSFTx', 20], ['NVDAx', 20]],
@@ -564,7 +628,7 @@ test('sign-in rejects a wrong signature, a wrong wallet, a reused nonce and an e
   assert.equal(reuse.json.error, 'bad_nonce');
 
   // an expired nonce: the issue time is inside the nonce, so we can forge an old one
-  const stale = `${(Date.now() - 11 * 60 * 1000).toString(36)}.${'a'.repeat(16)}`;
+  const stale = `${(Date.now() - 11 * 60 * 1000).toString(36).padStart(8, '0')}${'a'.repeat(16)}`;
   const expired = await request(s.port, 'POST', '/api/auth/verify', {
     body: { wallet: wallet.address, nonce: stale, signature: wallet.sign('anything') },
   });
@@ -580,7 +644,7 @@ test('sign-in rejects a wrong signature, a wrong wallet, a reused nonce and an e
     'bad_nonce',
   );
   assert.equal(
-    (await request(s.port, 'POST', '/api/auth/verify', { body: { wallet: wallet.address, nonce: 'x.y' } })).json.error,
+    (await request(s.port, 'POST', '/api/auth/verify', { body: { wallet: wallet.address, nonce: 'xy' } })).json.error,
     'bad_signature',
     'a missing signature is refused before anything else is checked',
   );
@@ -817,8 +881,8 @@ function accountSlice(owner, amount) {
 const gpaRow = (owner, amount) => ({ pubkey: 'ata', account: { data: [accountSlice(owner, amount), 'base64'] } });
 
 test('holder snapshots aggregate per owner and stay empty before launch', async () => {
-  const holderA = newWallet().address;
-  const holderB = newWallet().address;
+  const holderA = newSolanaAddress();
+  const holderB = newSolanaAddress();
 
   assert.deepEqual(parseAccountSlice(accountSlice(holderA, 5n)), { wallet: holderA, balance: 5n });
   assert.equal(parseAccountSlice('short'), null);
@@ -881,7 +945,7 @@ test('holder snapshots aggregate per owner and stay empty before launch', async 
 });
 
 test('a refused getProgramAccounts response is re-asked in owner-prefix partitions', async () => {
-  const holder = newWallet().address;
+  const holder = newSolanaAddress();
   let single = 0;
   let partitioned = 0;
   const service = createHoldersService({
@@ -911,7 +975,7 @@ test('a refused getProgramAccounts response is re-asked in owner-prefix partitio
 });
 
 test('with a Helius key the DAS method is used and paged to the end', async () => {
-  const owners = Array.from({ length: 1003 }, () => newWallet().address);
+  const owners = Array.from({ length: 1003 }, () => newSolanaAddress());
   const pages = [];
   const service = createHoldersService({
     cfg: buildConfig({ TOKEN_MINT: MEME_MINT, HELIUS_API_KEY: 'not-a-real-key' }),
@@ -940,9 +1004,15 @@ test('with a Helius key the DAS method is used and paged to the end', async () =
 
 /* ------------------------------------------------- the day after launch -- */
 
-test('with a token mint, /api/me, /api/stats and /preview switch to real holder data', async (t) => {
-  const holder = newWallet();
-  const whale = newWallet().address;
+test('with a token mint, the Solana holder set is real and an EVM sign-in is still not in it', async (t) => {
+  // The holders are Solana addresses, because that is what a Solana token has.
+  // The person signing in has a Robinhood Wallet address, because that is what
+  // this site now accepts. The two sets cannot intersect, and the API says so
+  // instead of showing a zero balance as if it had looked one up.
+  const holder = newSolanaAddress();
+  const whale = newSolanaAddress();
+  const signer = newWallet();
+
   const deps = makeDeps({
     rpc: {
       async call(method, params) {
@@ -952,70 +1022,74 @@ test('with a token mint, /api/me, /api/stats and /preview switch to real holder 
         if (method === 'getProgramAccounts') {
           return {
             context: { slot: 777 },
-            value: [gpaRow(holder.address, 2_000_000_000_000n), gpaRow(whale, 8_000_000_000_000n)],
+            value: [gpaRow(holder, 2_000_000_000_000n), gpaRow(whale, 8_000_000_000_000n)],
           };
         }
         if (method === 'getTokenAccountsByOwner') {
           const owner = params[0];
-          const amount = owner === holder.address ? '2000000000000' : '0';
+          const amount = owner === holder ? '2000000000000' : '0';
           return { value: [{ account: { data: { parsed: { info: { tokenAmount: { amount } } } } } }] };
         }
         throw new Error(`unexpected ${method}`);
       },
     },
   });
-  const s = await makeServer({ env: { TOKEN_MINT: MEME_MINT, TOKEN_SYMBOL: 'DROP', TOKEN_NAME: 'Stockdrop' }, deps });
+  const s = await makeServer({ env: { TOKEN_MINT: MEME_MINT, TOKEN_SYMBOL: 'DROP', TOKEN_NAME: 'Stoxvault' }, deps });
   t.after(() => s.close());
 
   const health = await get(s.port, '/api/health');
   assert.equal(health.json.tokenMint, MEME_MINT);
 
-  const { token } = await signIn(s.port, holder);
-  const me = await get(s.port, '/api/me', { headers: { authorization: `Bearer ${token}` } });
-  assert.equal(me.status, 200, me.text);
-  assert.equal(me.json.balance.raw, '2000000000000');
-  assert.equal(me.json.balance.ui, 2_000_000);
-  assert.equal(me.json.balance.eligible, true, '2M of a 1B supply is 0.2%, over the 0.1% bar');
-  assert.equal(me.json.balance.pctOfSupply, 0.2);
-  assert.equal(me.json.balance.thresholdUi, 1_000_000);
-  assert.equal(me.json.projected.shareBps, 2000, '2M of the 10M eligible total is 20%');
-  assert.ok(me.json.projected.note.includes('live holder snapshot'));
-
+  // The Solana side still works exactly as before: two eligible holders.
   const stats = await get(s.port, '/api/stats');
   assert.equal(stats.json.launched, true);
   assert.equal(stats.json.eligibleHolders, 2);
   assert.equal(stats.json.demandBasis, 'holding-weighted');
   assert.deepEqual(stats.json.demand, [], 'no saved picks yet, so no community demand to report');
 
-  // Once this holder saves a basket, demand is weighted by what they hold.
+  // The signed-in wallet is not one of them, and /api/me refuses to pretend.
+  const { token } = await signIn(s.port, signer);
+  const me = await get(s.port, '/api/me', { headers: { authorization: `Bearer ${token}` } });
+  assert.equal(me.status, 200, me.text);
+  assert.equal(me.json.wallet, signer.address);
+  assert.equal(me.json.balance, null, 'no balance is shown for an address the token cannot be held by');
+  assert.equal(me.json.attribution.tokenSet, true, 'the token IS set here');
+  assert.equal(me.json.attribution.chainsMatch, false, 'but the chains still do not match');
+  assert.equal(me.json.attribution.balanceRead, false, 'so nothing was read');
+  assert.equal(me.json.attribution.eligible, false);
+  assert.equal(me.json.attribution.canReceive, false);
+  assert.ok(me.json.attribution.note.includes('cannot appear in a holder snapshot'), me.json.attribution.note);
+  assert.ok(!me.json.attribution.note.includes('the token is not set'), 'with a mint set, that reason is dropped');
+  assert.equal(me.json.projected.shareBps, null, 'no share is projected, not even zero');
+  assert.equal(me.json.cycle.eligible, null);
+
+  // Saving a basket still works — the preference is real and is kept — but it
+  // carries no holding weight, and the numbers say that rather than hiding it.
   const saved = await request(s.port, 'PUT', '/api/me/prefs', {
     headers: { authorization: `Bearer ${token}` },
     body: { picks: [{ mint: NVDA, pct: 60 }, { mint: AAPL, pct: 40 }] },
   });
   assert.equal(saved.status, 200, saved.text);
+  assert.equal(saved.json.wallet, signer.address);
   const weighted = await get(s.port, '/api/stats');
-  assert.deepEqual(weighted.json.demand.map((d) => [d.symbol, d.pct]), [['NVDAx', 60], ['AAPLx', 40]]);
-  assert.equal(weighted.json.demand.reduce((acc, d) => acc + d.pct, 0), 100);
+  assert.equal(weighted.json.prefHolders, 1, 'the basket is stored and counted as a saved basket');
+  assert.deepEqual(weighted.json.demand, [], 'but it moves no community demand: this wallet holds nothing');
 
   const preview = await get(s.port, '/api/rounds/preview');
   assert.equal(preview.status, 200, preview.text);
   assert.equal(preview.json.basis, 'live-snapshot');
-  assert.equal(preview.json.wouldSkip, null, '2.45 SOL clears the 0.5 SOL minimum and two wallets qualify');
-  assert.equal(preview.json.eligibleHolders, 2);
-  assert.equal(preview.json.prefHolders, 1);
-  assert.equal(preview.json.defaultHolders, 1);
+  assert.equal(preview.json.eligibleHolders, 2, 'the two Solana holders');
+  assert.equal(preview.json.prefHolders, 0, 'neither of whom has saved a basket');
+  assert.equal(preview.json.defaultHolders, 2);
   assert.equal(preview.json.snapshotSlot, 777);
   assert.equal(preview.json.demand.reduce((acc, d) => acc + d.pct, 0), 100);
-  const spent = preview.json.demand.reduce((acc, d) => acc + BigInt(d.solLamports), 0n);
-  assert.ok(spent <= 2_450_000_000n, 'a round never plans to spend more than the pool');
-  assert.ok(spent > 2_449_999_000n, 'and it plans to spend nearly all of it');
   assert.equal(preview.json.simulated, true, 'a preview is always a simulation');
 });
 
 /* ------------------------------------------------------------ regressions */
 
 test('balanceOf asks getTokenAccountsByOwner with exactly one filter key', async () => {
-  const holder = newWallet().address;
+  const holder = newSolanaAddress();
 
   // The filter is an externally-tagged enum. Verified live against
   // api.mainnet-beta.solana.com: {mint, programId} together answers
@@ -1297,22 +1371,83 @@ test('/api/me reports an honest cycle before launch', async (t) => {
   assert.equal(cycle.effectiveBalanceRaw, null);
   assert.equal(cycle.eligible, null, 'eligibility is unknown, not false');
   assert.equal(cycle.thresholdRaw, '1000000000000');
-  assert.ok(cycle.note.includes('has not launched'), cycle.note);
+  assert.equal(cycle.note, me.json.attribution.note, 'the cycle note is the attribution note: one story');
+  assert.ok(cycle.note.includes('the token is not set'), cycle.note);
   assert.deepEqual(verified.cycle, cycle, 'verify returns the same cycle as GET /api/me');
 });
 
-test('/api/me explains each anti-cheat case once the coin is live', async (t) => {
-  const holder = newWallet();
-  const whale = newWallet().address;
-  const s = await makeLaunchedServer({ holder: holder.address, whale });
+test('a launched server still attributes nothing to a Robinhood Wallet address', async (t) => {
+  // The token exists, the snapshots are real, two Solana wallets are eligible —
+  // and the wallet that actually signed in is on another chain entirely. This is
+  // the state the site ships in, and the API must not soften it.
+  const holder = newSolanaAddress();
+  const whale = newSolanaAddress();
+  const s = await makeLaunchedServer({ holder, whale });
   t.after(() => s.close());
 
-  const { token } = await signIn(s.port, holder);
+  const signer = newWallet();
+  const { token } = await signIn(s.port, signer);
   const auth = { authorization: `Bearer ${token}` };
-  const cycleNow = async () => (await get(s.port, '/api/me', { headers: auth })).json.cycle;
+
+  // Even with a genuine opening snapshot in the store, the EVM address is not in
+  // it and never can be, so no verdict is offered.
+  await s.db.setKV('snapshot:open', {
+    takenAt: minutesAgo(5),
+    hash: 'open_hash',
+    holders: [{ wallet: holder, balance: '1500000000000' }, { wallet: whale, balance: '8000000000000' }],
+  });
+
+  const me = (await get(s.port, '/api/me', { headers: auth })).json;
+  assert.equal(me.balance, null);
+  assert.equal(me.cycle.eligible, null, 'not false-as-verdict, and certainly not true');
+  assert.equal(me.cycle.currentBalanceRaw, null, 'nothing was read, so nothing is reported');
+  assert.equal(me.cycle.openSnapshotAt, null, 'a snapshot this wallet cannot be in is not quoted at it');
+  assert.equal(me.projected.shareBps, null);
+  assert.equal(me.attribution.canReceive, false);
+  assert.ok(me.attribution.note.includes('Solana'), me.attribution.note);
+
+  // The Solana side of the same server is untouched and still honest about itself.
+  assert.equal((await get(s.port, '/api/stats')).json.eligibleHolders, 2);
+});
+
+test('buildAttribution names each reason once, and drops it when it stops being true', () => {
+  const notLaunched = buildAttribution(buildConfig({}));
+  assert.equal(notLaunched.tokenSet, false);
+  assert.equal(notLaunched.chainsMatch, false);
+  assert.equal(notLaunched.balanceRead, false);
+  assert.equal(notLaunched.eligible, false);
+  assert.equal(notLaunched.canReceive, false);
+  assert.equal(notLaunched.signInChainId, 4663);
+  assert.ok(notLaunched.note.includes('Robinhood Chain address (chain 4663)'), notLaunched.note);
+  assert.ok(notLaunched.note.includes('the token is not set'), notLaunched.note);
+
+  const launched = buildAttribution(buildConfig({ TOKEN_MINT: MEME_MINT }));
+  assert.equal(launched.tokenSet, true);
+  assert.equal(launched.chainsMatch, false, 'a mint does not make the chains match');
+  assert.equal(launched.balanceRead, false);
+  assert.ok(!launched.note.includes('the token is not set'), launched.note);
+  assert.ok(launched.note.includes('cannot appear in a holder snapshot'), launched.note);
+
+  // A different sign-in chain is named, not hard-coded.
+  const testnet = buildAttribution(buildConfig({ AUTH_CHAIN_ID: '46630', AUTH_CHAIN_NAME: 'Robinhood Chain testnet' }));
+  assert.equal(testnet.signInChainId, 46630);
+  assert.ok(testnet.note.includes('Robinhood Chain testnet address (chain 46630)'), testnet.note);
+});
+
+test('buildCycle still decides every anti-cheat case, for the day the payout side moves', () => {
+  // The full-cycle rule is not going away — it is simply unreachable through
+  // /api/me while sign-in and payout are on different chains. Testing the pure
+  // function keeps every branch covered instead of quietly losing it.
+  const cfg = buildConfig({ TOKEN_MINT: MEME_MINT, TOKEN_SYMBOL: 'DROP' });
+  const wallet = newSolanaAddress();
+  const whale = newSolanaAddress();
+  const nowMs = Date.now();
+  const bal = (raw) => ({ raw, ui: Number(raw) / 1e6 });
+  const snap = (holders) => ({ takenAt: minutesAgo(5), hash: 'open_hash', holders });
+  const run = (balance, openSnapshot) => buildCycle({ cfg, wallet, balance, openSnapshot, nowMs });
 
   // 1. the keeper has not opened this cycle's snapshot yet
-  const pending = await cycleNow();
+  const pending = run(bal('2000000000000'), null);
   assert.equal(pending.currentBalanceRaw, '2000000000000');
   assert.equal(pending.currentBalanceUi, 2_000_000);
   assert.equal(pending.inOpenSnapshot, null, 'no snapshot is invented');
@@ -1320,23 +1455,8 @@ test('/api/me explains each anti-cheat case once the coin is live', async (t) =>
   assert.equal(pending.eligible, null);
   assert.ok(pending.note.includes('No opening snapshot'), pending.note);
 
-  // 2. a snapshot from a previous cycle is not this cycle's
-  await s.db.setKV('snapshot:open', {
-    takenAt: minutesAgo(60 * 24),
-    hash: 'stale',
-    holders: [{ wallet: holder.address, balance: '9000000000000' }],
-  });
-  const stale = await cycleNow();
-  assert.equal(stale.openSnapshotAt, null, 'a stale snapshot is treated as absent');
-  assert.ok(stale.note.includes('No opening snapshot'), stale.note);
-
-  // 3. held all cycle: the smaller (opening) figure still clears the bar
-  await s.db.setKV('snapshot:open', {
-    takenAt: minutesAgo(5),
-    hash: 'open_hash',
-    holders: [{ wallet: holder.address, balance: '1500000000000' }, { wallet: whale, balance: '8000000000000' }],
-  });
-  const held = await cycleNow();
+  // 2. held all cycle: the smaller (opening) figure still clears the bar
+  const held = run(bal('2000000000000'), snap([{ wallet, balance: '1500000000000' }, { wallet: whale, balance: '8000000000000' }]));
   assert.equal(held.inOpenSnapshot, true);
   assert.equal(held.openSnapshotHash, 'open_hash');
   assert.equal(held.openBalanceRaw, '1500000000000');
@@ -1345,65 +1465,46 @@ test('/api/me explains each anti-cheat case once the coin is live', async (t) =>
   assert.equal(held.eligible, true);
   assert.ok(held.note.includes('all cycle'), held.note);
 
-  // 4. sold during the cycle: the smaller figure is the one held now
-  await s.db.setKV('snapshot:open', {
-    takenAt: minutesAgo(5),
-    hash: 'open_hash',
-    holders: [{ wallet: holder.address, balance: '3000000000000' }],
-  });
-  const fell = await cycleNow();
+  // 3. sold during the cycle: the smaller figure is the one held now
+  const fell = run(bal('2000000000000'), snap([{ wallet, balance: '3000000000000' }]));
   assert.equal(fell.openBalanceRaw, '3000000000000');
   assert.equal(fell.effectiveBalanceRaw, '2000000000000');
   assert.equal(fell.eligible, true);
   assert.ok(fell.note.includes('fell during this cycle'), fell.note);
 
-  // 5. bought this cycle: not in the opening snapshot at all
-  await s.db.setKV('snapshot:open', {
-    takenAt: minutesAgo(5),
-    hash: 'open_hash',
-    holders: [{ wallet: whale, balance: '8000000000000' }],
-  });
-  const bought = await cycleNow();
+  // 4. bought this cycle: not in the opening snapshot at all
+  const bought = run(bal('2000000000000'), snap([{ wallet: whale, balance: '8000000000000' }]));
   assert.equal(bought.inOpenSnapshot, false);
   assert.equal(bought.openBalanceRaw, '0');
   assert.equal(bought.effectiveBalanceRaw, '0');
   assert.equal(bought.eligible, false);
   assert.ok(bought.note.includes('next one'), bought.note);
 
-  // 6. under the threshold when the cycle opened, even though it holds more now
-  await s.db.setKV('snapshot:open', {
-    takenAt: minutesAgo(5),
-    hash: 'open_hash',
-    holders: [{ wallet: holder.address, balance: '10000000' }],
-  });
-  const thin = await cycleNow();
+  // 5. under the threshold when the cycle opened, even though it holds more now
+  const thin = run(bal('2000000000000'), snap([{ wallet, balance: '10000000' }]));
   assert.equal(thin.eligible, false);
   assert.equal(thin.effectiveBalanceRaw, '10000000');
   assert.ok(thin.note.includes('when this cycle opened'), thin.note);
-});
 
-test('/api/me: a wallet under the threshold, and anti-cheat switched off', async (t) => {
-  const holder = newWallet();
-  const stranger = newWallet();
-  const whale = newWallet().address;
-  const s = await makeLaunchedServer({ holder: holder.address, whale });
-  t.after(() => s.close());
-
-  const { token } = await signIn(s.port, stranger);
-  const poor = (await get(s.port, '/api/me', { headers: { authorization: `Bearer ${token}` } })).json.cycle;
+  // 6. under the threshold right now
+  const poor = run(bal('0'), snap([{ wallet, balance: '9000000000000' }]));
   assert.equal(poor.currentBalanceRaw, '0');
   assert.equal(poor.eligible, false);
   assert.ok(poor.note.includes('needed to qualify'), poor.note);
 
-  const off = await makeLaunchedServer({ holder: holder.address, whale, env: { ANTICHEAT: '0' } });
+  // 7. anti-cheat off: the round snapshot alone decides
+  const offCfg = buildConfig({ TOKEN_MINT: MEME_MINT, TOKEN_SYMBOL: 'DROP', ANTICHEAT: '0' });
+  const off = buildCycle({ cfg: offCfg, wallet, balance: bal('2000000000000'), openSnapshot: null, nowMs });
+  assert.equal(off.antiCheat, false);
+  assert.equal(off.effectiveBalanceRaw, '2000000000000');
+  assert.equal(off.eligible, true);
+  assert.equal(off.inOpenSnapshot, null);
+  assert.ok(off.note.includes('Anti-cheat is off'), off.note);
+});
+
+test('the anti-cheat switch is still published even though no wallet can be judged by it', async (t) => {
+  const off = await makeLaunchedServer({ holder: newSolanaAddress(), whale: newSolanaAddress(), env: { ANTICHEAT: '0' } });
   t.after(() => off.close());
-  const signedIn = await signIn(off.port, holder);
-  const cycle = (await get(off.port, '/api/me', { headers: { authorization: `Bearer ${signedIn.token}` } })).json.cycle;
-  assert.equal(cycle.antiCheat, false);
-  assert.equal(cycle.effectiveBalanceRaw, '2000000000000', 'with the rule off, the round snapshot alone decides');
-  assert.equal(cycle.eligible, true);
-  assert.equal(cycle.inOpenSnapshot, null);
-  assert.ok(cycle.note.includes('Anti-cheat is off'), cycle.note);
   assert.equal((await get(off.port, '/api/config')).json.rules.antiCheat, false);
   assert.equal((await get(off.port, '/api/stats')).json.antiCheat, false);
 });

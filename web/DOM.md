@@ -9,13 +9,17 @@ If something is genuinely missing, add it to this file first.
 Files: `public/index.html`, `public/css/{tokens,base,layout,components}.css`,
 `public/assets/*`. You own everything under `public/js/`: `config.js` (a classic
 script, runs first), `app.js` (`type="module"`), and the modules it imports —
-`api.js`, `wallet.js`, `format.js`, `charts.js`, `rules.js`, `cta.js` and `ui/*`.
+`api.js`, `wallet.js`, `chain.js`, `format.js`, `charts.js`, `rules.js`, `cta.js`
+and `ui/*`.
 
 Pure decision functions live outside the DOM code and are covered by
 `web/test/*.test.js` (`node --test web/test/` from the repo root).
 
-**Nothing about the API changed in this redesign.** Same endpoints, same field
-names, same behaviour. What changed is the *shape of the page*: it is now a
+**The API changed in one place, and only one.** Sign-in moved from Solana
+ed25519 to Robinhood Wallet / EIP-191, so a wallet is now a `0x` EVM address,
+`/api/auth/nonce` returns an EIP-4361 message plus `chainId` / `domain`, and
+`/api/me` carries a new `attribution` object (§12, §8). Everything else is the
+same endpoints, same field names, same behaviour. What changed is the *shape of the page*: it is now a
 single screen with five tabs instead of one long scroll. §0.1 lists every
 rename so you can find what moved.
 
@@ -607,11 +611,12 @@ Starts at `data-state="empty"` (the not-connected block, whose
 | id | content |
 |---|---|
 | `#proj-balance` | `1,250,000 TOKEN` or `— (token not launched)` |
-| `#proj-eligibility` | `Yes` / `No — need 1,000,000` / `Unknown until launch` |
+| `#proj-eligibility` | `Yes` / `No — need 1,000,000` / `Unknown until launch`. **`/api/me.attribution.canReceive === false` outranks all three** and writes `No — not on the payout chain` (or `No — this wallet cannot be paid yet` when a balance exists): "unknown until launch" reads as "maybe later today", which is not what is true of a wallet on another chain |
 | `#proj-cycle-row` | the whole `.kv__row`; `hidden = true` unless `/api/me.cycle` carries a boolean |
 | `#proj-cycle` | did this wallet hold across the whole cycle: `Yes — counted at the smaller of the two snapshots` / `No — not for the cycle running now` |
 | `#proj-share` | `0.42% of the pool` or `—` (also mirror the bare percentage into `#stat-your-share`). **The share is the last thing here that touches the pool, and it stays because a percentage does not reveal a balance.** The `Pool now` row that used to sit under it is gone with the vault card; do not put a SOL figure back |
 | `#proj-cycle-note` | `.callout--info`, `hidden` unless the server sent a note or the wallet did not hold the full cycle. `#proj-cycle-note-title` / `#proj-cycle-note-text`. The server's `cycle.note` is rendered verbatim when it sends one — this is the "you bought this cycle, your first drop is the round after" case, and it stays calm, not alarming |
+| `#proj-chain-note` | `.callout--warn`, `#proj-chain-note-title` / `#proj-chain-note-text`. `readAttribution(me.attribution)` in `ui/basket.js` decides it, and the server's sentence is rendered **verbatim**. Hidden only when `canReceive === true`, or when there is no `attribution` object at all, or when it carries no sentence — a missing field is never read as "fine" |
 | `#proj-note` | why the number is an estimate; say `simulated` when `mode !== 'LIVE'` |
 | `#projection-sim` | badge, `hidden = false` in DRY_RUN |
 
@@ -792,32 +797,81 @@ on theme change and on drawer close.
 
 ## 12. Wallet modal (`#wallet-modal`, a native `<dialog>`)
 
+**Sign-in is Robinhood Wallet, on Robinhood Chain (EVM).** Phantom, Jupiter and
+Solflare are gone, and so is every Solana-specific path with them: Robinhood
+Wallet connects to dapps on Ethereum, Polygon, Arbitrum, Optimism, Base and
+Robinhood Chain, and Solana is not on that list, so it can never produce the
+ed25519 signature this site used to ask for.
+
 `#btn-connect` and `#btn-projection-connect` call `showModal()`.
 `#btn-wallet-close` calls `close()`. Also close on backdrop click if you want
 (`e.target === dialog`).
 
-Three options only, each `<button data-wallet="phantom|jupiter|solflare">`:
+Two options only, each `<button data-wallet="robinhood|walletconnect">`:
 
-| id | meta id | status id |
-|---|---|---|
-| `#wallet-phantom` | `#wallet-phantom-meta` | `#wallet-phantom-status` |
-| `#wallet-jupiter` | `#wallet-jupiter-meta` | `#wallet-jupiter-status` |
-| `#wallet-solflare` | `#wallet-solflare-meta` | `#wallet-solflare-status` |
+| id | meta id | status id | what it is |
+|---|---|---|---|
+| `#wallet-robinhood` | `#wallet-robinhood-meta` | `#wallet-robinhood-status` | an injected EIP-1193 provider — the Robinhood Wallet in-app browser on a phone |
+| `#wallet-walletconnect` | `#wallet-walletconnect-meta` | `#wallet-walletconnect-status` | a QR scanned with the app — the only desktop route |
 
-Detection (Wallet Standard first, injected providers as fallback):
-- detected → status text `Detected`, add `.badge--live`, meta `Ready to connect`;
-- not detected → status `Install`, keep `.badge--muted`, meta `Not installed`,
-  and on click open the wallet's site in a new tab
-  (`https://phantom.com`, `https://jup.ag`, `https://solflare.com`)
-  with `rel="noopener noreferrer"` — do not attempt a connection.
+Detection (`wallet.listWallets()` in `js/wallet.js`, one row per option):
+- **EIP-6963 first.** `js/wallet.js` listens for `eip6963:announceProvider` and
+  dispatches `eip6963:requestProvider`, matching `info.rdns` (then `info.name`)
+  against `/robinhood/i`. `window.ethereum` is the fallback, including its
+  `providers` array when several wallets are injected.
+- detected → status `Detected`, add `.badge--live`, meta `Ready to connect`.
+- not detected → status `Get the app`, keep `.badge--muted`, meta is the option's
+  `hint`, and the button **still works**: it opens
+  `https://robinhood.com/us/en/wallet/` in a new tab with
+  `rel="noopener noreferrer"`. There is no extension to install, so "not
+  detected" means "this is not the app's browser", not "install something".
+- `disabled: true` (the QR option today) → status `Unavailable`, meta is the
+  option's `reason`, `button.disabled = true` and `aria-disabled="true"`. A
+  disabled row never attempts a connection.
+
+**WalletConnect is gated on a project id** read from
+`<meta name="walletconnect-project-id">`, exactly as `api-base` is read. The tag
+ships empty, so the option renders disabled with the honest reason rather than
+appearing and failing. The library is a dynamic import from a CDN, pinned:
+`https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2.17.0/+esm`.
+It is only fetched when a project id exists. There is no bundler and must not be
+one. `walletConnectConfig()` in `js/chain.js` is the whole decision and is
+covered by `web/test/evm.test.js`.
+
+### Wrong network — `#wallet-chain`
+
+`hidden` until a connection reports a chain that is not Robinhood Chain (4663 /
+`0x1237`). Then `#wallet-chain-text` carries `chainStatus().text` plus the line
+that switching is a network change, not a transaction, and
+`#btn-wallet-switch` calls `wallet_switchEthereumChain`, falling back to
+`wallet_addEthereumChain` on error 4902.
+
+**Nothing switches a network on its own.** A provider that will not answer
+`eth_chainId` gives `known: false`, which is not the same as being on the wrong
+chain, and no switch is offered for it.
+
+### `#wallet-attribution` — always visible, never conditional
+
+The static callout saying in plain words that signing in does **not** make a
+wallet eligible: sign-in is Robinhood Chain, drops are Solana, the token is not
+set. It has no hidden state and no data binding. Do not add one.
 
 `#wallet-error` is `role="alert"`, starts `hidden`; use it for signature
 rejection and verification failure. Keep the message short and factual.
 
-Connect flow is fixed by CONTRACT.md §8: `connect()` → `POST /api/auth/nonce` →
-`signMessage(utf8(message))` → `POST /api/auth/verify` → token in
-`localStorage` → `GET /api/me`. **Never call `signTransaction` or
-`signAndSendTransaction` anywhere in this app.**
+Connect flow is fixed by CONTRACT.md §8: `connect()` → check the chain →
+`POST /api/auth/nonce` → `personal_sign(hex(utf8(message)), address)` →
+`POST /api/auth/verify` → token in `localStorage` → `GET /api/me`.
+**Exactly one signature.** `js/wallet.js` routes every provider call through one
+allow-list — `eth_requestAccounts`, `eth_accounts`, `eth_chainId`,
+`personal_sign`, `wallet_switchEthereumChain`, `wallet_addEthereumChain` — and
+nothing else is reachable. Never call `eth_sendTransaction`, `eth_sign`,
+`eth_signTypedData*`, or any approval, anywhere in this app.
+
+**Addresses are compared with `sameAddress()` from `js/chain.js`, never `===`.**
+A wallet returns the lower-case form and the server returns the EIP-55 checksum
+form; a strict compare between the two logs the user out on every reload. The
+checksum itself is the server's job — the browser ships no keccak.
 
 ---
 

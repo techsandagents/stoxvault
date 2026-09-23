@@ -657,10 +657,17 @@ function applyDisconnected() {
 
 const walletModal = document.getElementById('wallet-modal');
 const walletError = document.getElementById('wallet-error');
+const walletChain = document.getElementById('wallet-chain');
+const walletChainText = document.getElementById('wallet-chain-text');
+const walletSwitchBtn = document.getElementById('btn-wallet-switch');
+
+/** The last option the user tried, so the switch button knows what to retry. */
+let pendingWalletId = null;
 
 function openWalletModal() {
   if (!walletModal) return;
   showWalletError('');
+  hideChainNotice();
   renderWalletOptions();
   if (typeof walletModal.showModal === 'function' && !walletModal.open) walletModal.showModal();
 }
@@ -675,6 +682,20 @@ function showWalletError(message) {
   walletError.hidden = !message;
 }
 
+function hideChainNotice() {
+  if (walletChain) walletChain.hidden = true;
+}
+
+/**
+ * The wrong-network state. Shown only after a real `eth_chainId` answer, and it
+ * never switches anything by itself: the user presses the button.
+ */
+function showChainNotice(status) {
+  if (!walletChain || !walletChainText) return;
+  walletChainText.textContent = `${status.text} Switching is a network change in your wallet — it is not a transaction and it moves nothing.`;
+  walletChain.hidden = false;
+}
+
 function renderWalletOptions() {
   for (const option of wallet.listWallets()) {
     const button = document.getElementById(`wallet-${option.id}`);
@@ -682,26 +703,41 @@ function renderWalletOptions() {
     const status = document.getElementById(`wallet-${option.id}-status`);
     if (!button || !meta || !status) continue;
 
-    if (option.installed) {
+    status.classList.remove('badge--live');
+    status.classList.add('badge--muted');
+    button.disabled = Boolean(option.disabled);
+
+    if (option.disabled) {
+      // Configured but unusable — say why, in the row, rather than letting
+      // somebody press a button that cannot work.
+      status.textContent = 'Unavailable';
+      meta.textContent = option.reason || 'Not available';
+      button.title = option.reason || '';
+      button.setAttribute('aria-disabled', 'true');
+    } else if (option.available) {
       status.textContent = 'Detected';
       status.classList.add('badge--live');
       status.classList.remove('badge--muted');
       meta.textContent = 'Ready to connect';
-      button.removeAttribute('aria-describedby');
+      button.removeAttribute('aria-disabled');
+      button.title = '';
     } else {
-      status.textContent = 'Install';
-      status.classList.remove('badge--live');
-      status.classList.add('badge--muted');
-      meta.textContent = 'Not installed';
+      status.textContent = 'Get the app';
+      meta.textContent = option.hint || 'Not installed';
+      button.removeAttribute('aria-disabled');
+      button.title = '';
     }
   }
 }
 
 async function connectWallet(id) {
   const option = wallet.listWallets().find((w) => w.id === id);
-  if (!option) return;
+  if (!option || option.disabled) return;
+  pendingWalletId = id;
 
-  if (!option.installed) {
+  // Robinhood Wallet has no extension, so "not detected" means this browser is
+  // not the app's browser: send them to the app rather than to a failed connect.
+  if (!option.available) {
     window.open(option.installUrl, '_blank', 'noopener,noreferrer');
     return;
   }
@@ -709,6 +745,7 @@ async function connectWallet(id) {
   const connectLabel = document.getElementById('connect-label');
   const button = document.getElementById(`wallet-${id}`);
   showWalletError('');
+  hideChainNotice();
   if (connectLabel) connectLabel.textContent = 'Connecting…';
   if (button) button.disabled = true;
 
@@ -717,16 +754,24 @@ async function connectWallet(id) {
     closeWalletModal();
     applyConnected(result.me || { wallet: result.wallet });
     if (!result.me) await loadMe();
-    toast({ kind: 'success', title: 'Wallet connected', text: `Signed in as ${truncAddr(result.wallet)}.` });
+    toast({
+      kind: 'success',
+      title: 'Wallet connected',
+      text: `Signed in as ${truncAddr(result.wallet)}. This proves the wallet is yours; it does not make it eligible for a drop.`,
+    });
   } catch (err) {
     if (connectLabel) connectLabel.textContent = 'Connect wallet';
+    if (err instanceof wallet.WalletError && err.code === 'wrong_chain') {
+      showChainNotice(err.chain || { text: err.message });
+      return;
+    }
     const message =
       err instanceof wallet.WalletError
         ? err.message
         : api.errorText(err, 'The wallet could not be verified.');
     showWalletError(message);
   } finally {
-    if (button) button.disabled = false;
+    if (button) button.disabled = Boolean(option.disabled);
     if (!api.session.get()) {
       const label = document.getElementById('connect-label');
       if (label) label.textContent = 'Connect wallet';
@@ -734,12 +779,34 @@ async function connectWallet(id) {
   }
 }
 
+if (walletSwitchBtn) {
+  walletSwitchBtn.addEventListener('click', async () => {
+    walletSwitchBtn.disabled = true;
+    const original = walletSwitchBtn.textContent;
+    walletSwitchBtn.textContent = 'Check your wallet…';
+    try {
+      const ok = await wallet.switchToRobinhoodChain();
+      if (ok) {
+        hideChainNotice();
+        if (pendingWalletId) await connectWallet(pendingWalletId);
+      } else {
+        showChainNotice(await wallet.currentChain());
+      }
+    } catch (err) {
+      showWalletError(err instanceof wallet.WalletError ? err.message : 'The wallet would not switch network.');
+    } finally {
+      walletSwitchBtn.disabled = false;
+      walletSwitchBtn.textContent = original;
+    }
+  });
+}
+
 if (walletModal) {
   const options = document.getElementById('wallet-options');
   if (options) {
     options.addEventListener('click', (event) => {
       const button = event.target.closest('[data-wallet]');
-      if (button) connectWallet(button.dataset.wallet);
+      if (button && !button.disabled) connectWallet(button.dataset.wallet);
     });
   }
   const closeBtn = document.getElementById('btn-wallet-close');

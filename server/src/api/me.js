@@ -1,9 +1,19 @@
 /**
- * STOCKDROP — the signed-in wallet's own view.
+ * STOXVAULT — the signed-in wallet's own view.
  *
  * `GET /api/me` answers the three questions a holder actually has: do I qualify,
  * what am I buying, and what is my share of the next drop. Every one of those
  * can be honestly unknown before launch, and says so instead of guessing.
+ *
+ * SINCE THE MOVE TO ROBINHOOD WALLET there is a fourth, larger honesty problem,
+ * and `attribution` exists for it. Sign-in is now an EVM address; holder
+ * balances, eligibility and every payout still read a SOLANA token, and the
+ * keeper still pays out on Solana. An EVM address can never appear in a Solana
+ * holder snapshot, so a connected wallet cannot be eligible and cannot be paid —
+ * whatever else is true. This file therefore refuses to read a balance at all
+ * while the two chains disagree, rather than reading one and finding nothing:
+ * "we did not look, and here is why" is the truth, and "we looked and you hold
+ * zero" is not.
  *
  * `PUT /api/me/prefs` is the only write in the whole product, and it is
  * validated by the same engine function the keeper uses, so a basket that saves
@@ -259,12 +269,66 @@ export function buildCycle({ cfg, wallet, balance, openSnapshot, nowMs }) {
 }
 
 /**
+ * Why this wallet can or cannot be credited with a drop.
+ *
+ * Two independent reasons it cannot, today, and the document names both rather
+ * than collapsing them: the token is not set, and the sign-in chain is not the
+ * payout chain. `eligible` and `canReceive` are hard `false` here — there is no
+ * code path that makes them true while `chainsMatch` is false.
+ *
+ * @param {object} cfg
+ * @returns {{signInChain: string, signInChainId: number, signInChainName: string,
+ *            payoutChain: string, chainsMatch: boolean, tokenSet: boolean,
+ *            balanceRead: boolean, eligible: false, canReceive: false,
+ *            headline: string, note: string}}
+ */
+export function buildAttribution(cfg) {
+  const chainsMatch = Boolean(cfg.walletChainMatchesPayout);
+  const tokenSet = Boolean(cfg.launched);
+  const chainName = cfg.authChainName || 'Robinhood Chain';
+  const chainId = Number.isInteger(cfg.authChainId) ? cfg.authChainId : 4663;
+
+  const reasons = [];
+  if (!chainsMatch) {
+    reasons.push(
+      `you signed in with a ${chainName} address (chain ${chainId}) and every drop is still bought and sent on Solana, `
+      + 'so this address cannot appear in a holder snapshot',
+    );
+  }
+  if (!tokenSet) reasons.push('the token is not set, so there is no balance to read and no round to be counted in');
+
+  const note = chainsMatch && tokenSet
+    ? 'This wallet is on the same chain as the payouts.'
+    : `No drop can be attributed to this wallet yet: ${reasons.join(', and ')}. `
+      + 'Your saved basket is kept and will count from the moment the payout side can reach this address. '
+      + 'Nothing on this page should be read as saying you will receive anything today.';
+
+  return {
+    signInChain: cfg.walletChain || 'evm',
+    signInChainId: chainId,
+    signInChainName: chainName,
+    payoutChain: cfg.payoutChain || 'solana',
+    chainsMatch,
+    tokenSet,
+    balanceRead: chainsMatch && tokenSet,
+    eligible: false,
+    canReceive: false,
+    headline: 'This wallet cannot receive a drop yet',
+    note,
+  };
+}
+
+/**
  * The `me` document, shared by GET /api/me and the response to a successful
  * POST /api/auth/verify (the contract says they are the same object).
  */
 export async function buildMe({ cfg, db, services, wallet, now = Date.now }) {
   const { universe, holders, stats } = services;
   const nowMs = now();
+  const attribution = buildAttribution(cfg);
+  // The ONLY condition under which this server reads a balance for a signed-in
+  // wallet. While it is false, nothing below invents one.
+  const readable = attribution.balanceRead;
 
   const [prefs, stocks] = await Promise.all([db.getPrefs(wallet), universe.stocks()]);
 
@@ -273,7 +337,7 @@ export async function buildMe({ cfg, db, services, wallet, now = Date.now }) {
   const basket = effectiveBasket(prefs?.picks ?? null, index, fallback);
 
   let balance = null;
-  if (cfg.launched) {
+  if (readable) {
     const read = await holders.balanceOf(wallet);
     if (read) {
       const raw = read.raw;
@@ -294,8 +358,8 @@ export async function buildMe({ cfg, db, services, wallet, now = Date.now }) {
     }
   }
 
-  let projected = { shareBps: null, note: 'The coin has not launched yet, so there is nothing to project.' };
-  if (cfg.launched) {
+  let projected = { shareBps: null, note: attribution.note };
+  if (readable) {
     if (!balance) {
       projected = { shareBps: null, note: 'Your balance could not be read from the chain just now.' };
     } else if (!balance.eligible) {
@@ -325,16 +389,24 @@ export async function buildMe({ cfg, db, services, wallet, now = Date.now }) {
     }
   }
 
-  const openSnapshot = cfg.launched && cfg.antiCheat ? await currentOpenSnapshot({ cfg, db, nowMs }) : null;
+  const openSnapshot = readable && cfg.antiCheat ? await currentOpenSnapshot({ cfg, db, nowMs }) : null;
+
+  // The cycle verdict is only meaningful for a wallet the snapshots could
+  // contain. While they cannot, every field stays null and the note is the
+  // attribution note — one explanation, not two competing ones.
+  const cycle = readable
+    ? buildCycle({ cfg, wallet, balance, openSnapshot, nowMs })
+    : { ...buildCycle({ cfg, wallet, balance: null, openSnapshot: null, nowMs }), eligible: null, note: attribution.note };
 
   return {
     wallet,
     balance,
+    attribution,
     prefs: prefs ?? null,
     effectivePicks: basket.picks,
     picksSource: basket.source,
     projected,
-    cycle: buildCycle({ cfg, wallet, balance, openSnapshot, nowMs }),
+    cycle,
     nextRoundAt: cfg.nextRoundAtIso(nowMs),
   };
 }

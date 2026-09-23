@@ -174,6 +174,41 @@ export function readCycle(raw) {
   return { known: held !== null, held, note, showNote: Boolean(note) || held === false };
 }
 
+/**
+ * What `/api/me.attribution` says: can this wallet be credited with a drop, and
+ * if not, why not.
+ *
+ * Sign-in is a Robinhood Chain (EVM) address; holders, eligibility and payouts
+ * still read a Solana token. So the answer is no, and this is the one place the
+ * page says it. Three rules, and they are all refusals:
+ *
+ *   - a `me` document with no `attribution` object produces NO claim either way.
+ *     An older server that does not send the field must not be read as "fine".
+ *     It is read as "say nothing", and the rest of the panel already refuses to
+ *     invent a balance.
+ *   - `canReceive === true` is the only thing that hides the callout. Anything
+ *     else — false, missing, a non-boolean — keeps it up.
+ *   - the server's sentence is rendered verbatim. A paraphrase written here
+ *     would drift from what the server actually knows.
+ *
+ * @param {unknown} raw `me.attribution`
+ * @returns {{show: boolean, title: string, text: string}}
+ */
+export function readAttribution(raw) {
+  const att = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+  const hidden = { show: false, title: '', text: '' };
+  if (!att) return hidden;
+  if (att.canReceive === true) return hidden;
+
+  const text = firstText(att, ['note', 'message', 'detail', 'text']);
+  if (!text) return hidden; // a flag with no explanation is not worth a callout
+  return {
+    show: true,
+    title: firstText(att, ['headline', 'title']) || 'This wallet cannot receive a drop yet',
+    text,
+  };
+}
+
 export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock } = {}) {
   const picksState = document.getElementById('basket-picks');
   const picksList = document.getElementById('basket-picks-list');
@@ -208,6 +243,9 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
   const projCycleNote = document.getElementById('proj-cycle-note');
   const projCycleNoteTitle = document.getElementById('proj-cycle-note-title');
   const projCycleNoteText = document.getElementById('proj-cycle-note-text');
+  const projChainNote = document.getElementById('proj-chain-note');
+  const projChainNoteTitle = document.getElementById('proj-chain-note-title');
+  const projChainNoteText = document.getElementById('proj-chain-note-text');
   const projSim = document.getElementById('projection-sim');
   const projConnectBtn = document.getElementById('btn-projection-connect');
 
@@ -570,6 +608,22 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
   }
 
   /**
+   * `/api/me.attribution`, painted verbatim into its own callout.
+   *
+   * The server's sentence is the one rendered, unedited: it is the only place
+   * the page says out loud that a connected wallet cannot be paid, and a
+   * paraphrase written here would drift from what the server actually knows.
+   */
+  function renderChainNote(attribution) {
+    if (!projChainNote) return;
+    const state = readAttribution(attribution);
+    projChainNote.hidden = !state.show;
+    if (!state.show) return;
+    if (projChainNoteTitle) projChainNoteTitle.textContent = state.title;
+    if (projChainNoteText) projChainNoteText.textContent = state.text;
+  }
+
+  /**
    * The `cycle` object from `/api/me`, painted into the projection panel: did
    * this wallet hold across the whole six-hour cycle, and — the part a real
    * holder trips over — the "you bought this cycle, so your first drop is the
@@ -605,10 +659,13 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
       projection.dataset.state = 'empty';
       if (projSim) projSim.hidden = true;
       hideCycle();
+      renderChainNote(null);
       return;
     }
 
     if (projSim) projSim.hidden = mode === 'LIVE';
+
+    renderChainNote(me.attribution);
 
     const balance = me.balance;
     if (projBalance) {
@@ -624,7 +681,12 @@ export function createBasket({ onChange, onConnect, onSaved, onRetry, getStock }
     }
 
     if (projEligibility) {
-      if (!balance) projEligibility.textContent = 'Unknown until launch';
+      // `canReceive: false` is a verdict the server has actually reached, so it
+      // outranks "unknown until launch" — which would read as "maybe, later
+      // today" for a wallet that is on the wrong chain entirely.
+      if (me.attribution && me.attribution.canReceive === false) {
+        projEligibility.textContent = balance ? 'No — this wallet cannot be paid yet' : 'No — not on the payout chain';
+      } else if (!balance) projEligibility.textContent = 'Unknown until launch';
       else if (balance.eligible) projEligibility.textContent = 'Yes';
       else projEligibility.textContent = `No — need ${fmtInt(balance.thresholdUi)}`;
     }

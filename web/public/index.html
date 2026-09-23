@@ -12,6 +12,11 @@
 <!-- One-line switch for the API host. js/config.js reads this. -->
 <meta name="api-base" content="https://stockdrop-production.up.railway.app">
 
+<!-- WalletConnect project id, from cloud.walletconnect.com. js/wallet.js reads
+     this the same way. While it is blank the QR option in the wallet modal
+     renders DISABLED with the reason, rather than appearing and failing. -->
+<meta name="walletconnect-project-id" content="">
+
 <link rel="icon" href="/assets/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="icon" href="/assets/favicon-512.png" sizes="512x512" type="image/png">
 <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
@@ -585,6 +590,13 @@
             <p class="callout__title" id="proj-cycle-note-title">Your first drop is the next round</p>
             <p class="callout__text" id="proj-cycle-note-text"></p>
           </div>
+          <!-- Why this wallet cannot be credited. Filled verbatim from
+               /api/me.attribution; hidden only when the server says the
+               sign-in chain and the payout chain finally match. -->
+          <div class="callout callout--warn" id="proj-chain-note" hidden>
+            <p class="callout__title" id="proj-chain-note-title">This wallet cannot receive a drop yet</p>
+            <p class="callout__text" id="proj-chain-note-text"></p>
+          </div>
           <p class="hint" id="proj-note">Amounts are estimates until the round runs.</p>
         </div>
 
@@ -596,7 +608,7 @@
 
         <div class="pane pane--empty">
           <div class="state-block">
-            <p class="state-block__text">Connect a wallet to see whether it is eligible and what the next round would send it. Connecting is one message signature — no transaction, nothing leaves your wallet.</p>
+            <p class="state-block__text">Connect a Robinhood Wallet to save a basket. Connecting is one message signature — no transaction, nothing leaves your wallet. It does not make a wallet eligible: drops are still on Solana and the token is not set.</p>
             <span class="state-block__actions">
               <button class="btn btn--sm" id="btn-projection-connect" type="button">Connect wallet</button>
             </span>
@@ -986,7 +998,18 @@
         <dd class="faq__a">
           No to both. Connecting asks you to sign one short message, which is just a way of proving
           the wallet is yours. It is <strong class="strong">not a transaction</strong>. It costs
-          nothing, moves nothing, and gives us no permission over anything you hold.
+          nothing, moves nothing, and gives us no permission over anything you hold. This site never
+          asks a wallet to send a transaction or approve a token.
+        </dd>
+
+        <dt class="faq__q">Which wallet do I use, and does connecting it get me a drop?</dt>
+        <dd class="faq__a">
+          <strong class="strong">Robinhood Wallet</strong>, on Robinhood Chain. It has no browser
+          extension, so on a phone you open this page in the Robinhood Wallet app browser, and on a
+          desktop you scan a code with the app. And no — connecting does not get you a drop, and we
+          are not going to pretend otherwise. Robinhood Wallet is an Ethereum-style wallet, while the
+          drops are still bought and sent on Solana, so a connected wallet cannot be matched to a
+          holder. The token is not set yet either. You can save a basket now, and it is kept.
         </dd>
 
         <dt class="faq__q">Are there fees taken out of my drop?</dt>
@@ -1031,8 +1054,9 @@
       <div class="foot__disclaimers">
         <p class="foot__disclaimer"><strong class="strong">Nothing here is investment advice.</strong> STOXVAULT is an experiment in distributing token fees. Do your own research and assume you can lose everything you put in.</p>
         <p class="foot__disclaimer">xStocks are tokenised equity products <strong class="strong">issued by Backed Finance</strong>. STOXVAULT does not issue, custody, guarantee or endorse them, and holding one is not the same as owning the underlying share.</p>
-        <p class="foot__disclaimer">This project is <strong class="strong">not affiliated with, endorsed by or connected to</strong> Jupiter, Backed Finance, Solana Labs, any exchange, or any listed company or issuer. All company names and tickers are the property of their owners.</p>
-        <p class="foot__disclaimer">Preferences are stored off-chain and are public. Connecting a wallet signs a message only — STOXVAULT never asks you to sign a transaction and can never move your funds.</p>
+        <p class="foot__disclaimer">This project is <strong class="strong">not affiliated with, endorsed by or connected to</strong> Robinhood Markets, Jupiter, Backed Finance, Solana Labs, any exchange, or any listed company or issuer. All company names and tickers are the property of their owners.</p>
+        <p class="foot__disclaimer">Preferences are stored off-chain and are public. Connecting a wallet signs a message only — STOXVAULT never asks you to sign a transaction, never requests a token approval, and can never move your funds.</p>
+        <p class="foot__disclaimer"><strong class="strong">Sign-in is on Robinhood Chain; drops are on Solana.</strong> Until the payout side moves, a connected wallet can prove it is yours but cannot be matched to a holder, shown a balance, or paid.</p>
       </div>
 
       <div class="stack">
@@ -1091,38 +1115,50 @@
     </div>
 
     <div class="modal__body" id="wallet-options">
-      <button class="wallet-option" type="button" id="wallet-phantom" data-wallet="phantom">
-        <span class="wallet-option__mark" aria-hidden="true">PH</span>
+      <button class="wallet-option" type="button" id="wallet-robinhood" data-wallet="robinhood">
+        <span class="wallet-option__mark" aria-hidden="true">RH</span>
         <span>
-          <span class="wallet-option__name">Phantom</span>
-          <span class="wallet-option__meta" id="wallet-phantom-meta">Checking…</span>
+          <span class="wallet-option__name">Robinhood Wallet</span>
+          <span class="wallet-option__meta" id="wallet-robinhood-meta">Checking…</span>
         </span>
-        <span class="badge badge--muted wallet-option__status" id="wallet-phantom-status">…</span>
+        <span class="badge badge--muted wallet-option__status" id="wallet-robinhood-status">…</span>
       </button>
 
-      <button class="wallet-option" type="button" id="wallet-jupiter" data-wallet="jupiter">
-        <span class="wallet-option__mark" aria-hidden="true">JU</span>
+      <button class="wallet-option" type="button" id="wallet-walletconnect" data-wallet="walletconnect">
+        <span class="wallet-option__mark" aria-hidden="true">QR</span>
         <span>
-          <span class="wallet-option__name">Jupiter</span>
-          <span class="wallet-option__meta" id="wallet-jupiter-meta">Checking…</span>
+          <span class="wallet-option__name">Robinhood Wallet via QR</span>
+          <span class="wallet-option__meta" id="wallet-walletconnect-meta">Checking…</span>
         </span>
-        <span class="badge badge--muted wallet-option__status" id="wallet-jupiter-status">…</span>
+        <span class="badge badge--muted wallet-option__status" id="wallet-walletconnect-status">…</span>
       </button>
 
-      <button class="wallet-option" type="button" id="wallet-solflare" data-wallet="solflare">
-        <span class="wallet-option__mark" aria-hidden="true">SF</span>
-        <span>
-          <span class="wallet-option__name">Solflare</span>
-          <span class="wallet-option__meta" id="wallet-solflare-meta">Checking…</span>
+      <!-- Wrong network: shown only after a connection reports a chain that is
+           not Robinhood Chain. Nothing switches a network on its own. -->
+      <div class="callout callout--info" id="wallet-chain" hidden>
+        <p class="callout__title" id="wallet-chain-title">Wrong network</p>
+        <p class="callout__text" id="wallet-chain-text"></p>
+        <span class="state-block__actions">
+          <button class="btn btn--sm" id="btn-wallet-switch" type="button">Switch to Robinhood Chain</button>
         </span>
-        <span class="badge badge--muted wallet-option__status" id="wallet-solflare-status">…</span>
-      </button>
+      </div>
 
       <p class="hint" id="wallet-error" role="alert" hidden></p>
+
+      <!-- The honest state, always visible, never conditional on a fetch. -->
+      <div class="callout callout--warn" id="wallet-attribution">
+        <p class="callout__title">Signing in does not make you eligible for a drop</p>
+        <p class="callout__text" id="wallet-attribution-text">
+          Robinhood Wallet is an Ethereum-style wallet and this site signs you in on Robinhood Chain.
+          Every drop is still bought and sent on Solana, and the token is not set yet, so a connected
+          wallet cannot be shown a balance, cannot be marked eligible, and cannot receive anything today.
+          You can still save a basket, and it is kept.
+        </p>
+      </div>
     </div>
 
     <div class="modal__foot">
-      You will be asked to sign one message. It is not a transaction, it costs nothing, and nothing leaves your wallet.
+      You will be asked to sign one message. It is not a transaction, it costs nothing, it moves no funds, and nothing leaves your wallet.
     </div>
   </div>
 </dialog>
